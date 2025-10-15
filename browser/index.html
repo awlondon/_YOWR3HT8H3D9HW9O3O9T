@@ -71,6 +71,15 @@
         tx.onerror = () => reject(tx.error);
       });
     }
+    async function del(key) {
+      const db = await open();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
     async function keys() {
       const db = await open();
       return new Promise((resolve, reject) => {
@@ -80,7 +89,7 @@
         req.onerror = () => reject(req.error);
       });
     }
-    return { get, set, keys };
+    return { get, set, keys, del };
   })();
 
   // --- Spinner helper ---
@@ -119,21 +128,14 @@
   ];
 
   const ADJ_SYS = `
-You MUST return ONLY a single JSON object with EXACT keys and casing:
-{
-  "token": "<lowercased word/phrase>",
-  "model": "<model name>",
-  "version": 1,
-  "slots": {
-    ${REL_NAMES.map((r) => `"${r}": []`).join(",\n    ")}
-  },
-  "meta": { "language":"en", "downloaded_at":"<ISO-8601>", "source":"LLM" }
-}
-Rules:
-- 50 slot keys must ALL exist (empty arrays allowed).
-- Each item in a slot: {"token":"<word/phrase>", "w": <float 0..1>}
-- No extra properties anywhere. No markdown, no backticks, no commentary.
-- Use EXACT slot key names from the list above; do not invent or rename.
+Return ONLY a single JSON object with EXACT keys (no extras). All 50 slots must exist.
+Seed requirement: populate at least 3 neighbors (w>0) for EACH of these slots if known:
+"Co-occurs With","Associated With","Sequence Of","Represents","Symbolizes","Defines".
+Distribute 3–8 items per populated slot, weights in 0..1 (not all identical), prefer topical coherence.
+Schema:
+{"token": "<lowercase>", "model": "<ignored>", "version":1,
+ "slots": { ...50 exact keys... }, "meta":{"language":"en","downloaded_at":"<ISO>","source":"LLM"}}
+Return JSON only.
 `;
 
   const SLOTS_CANON_MAP = (() => {
@@ -158,40 +160,33 @@ Rules:
   }
 
   function sanitizeAdjMatrix(raw,{token,model}){
-    const now = new Date().toISOString();
     const out = {
-      token: String(raw?.token ?? token).toLowerCase().trim(),
-      model: String(raw?.model ?? model),
+      token: String(token).toLowerCase().trim(),
+      model: String(model),
       version: 1,
       slots: Object.fromEntries(REL_NAMES.map(r=>[r,[]])),
       meta: {
         language: "en",
-        downloaded_at: now,
+        downloaded_at: new Date().toISOString(),
         source: "LLM"
       }
     };
-    const errs = [];
-    const meta = raw?.meta;
-    if(meta && typeof meta === "object" && typeof meta.downloaded_at === "string"){
-      out.meta.downloaded_at = meta.downloaded_at;
-    }
+    let nonEmpty = 0;
     const slots = raw?.slots && typeof raw.slots === "object" ? raw.slots : {};
     for(const [k,v] of Object.entries(slots)){
       const canon = SLOTS_CANON_MAP[(k||"").replace(/\s+/g,"").toLowerCase()];
-      if(!canon){ errs.push(`Unknown slot key "${k}" ignored`); continue; }
-      if(!Array.isArray(v)){ errs.push(`Slot "${canon}" not an array; coerced to []`); continue; }
-      for(let idx=0; idx<v.length; idx++){
-        const item = v[idx] ?? {};
-        const t = (item.token ?? item.word ?? item.t ?? "").toString().trim();
-        if(!t){ errs.push(`slots["${canon}"][${idx}].token empty → dropped`); continue; }
-        let rawW = Number(item.w);
-        if(!Number.isFinite(rawW)){ errs.push(`slots["${canon}"][${idx}].w not number → 0`); rawW = 0; }
-        const w = clamp(rawW,0,1);
-        if(w !== rawW){ errs.push(`slots["${canon}"][${idx}].w clamped to ${w}`); }
-        out.slots[canon].push({ token: t.toLowerCase(), w });
+      if(!canon || !Array.isArray(v)) continue;
+      for(const entry of v){
+        const t = String(entry?.token ?? "").toLowerCase().trim();
+        let w = Number(entry?.w);
+        if(!t) continue;
+        if(!Number.isFinite(w)) w = 0;
+        w = clamp(w,0,1);
+        out.slots[canon].push({ token: t, w });
+        if(w>0) nonEmpty++;
       }
     }
-    return { out, errs };
+    return { out, nonEmpty };
   }
 
   function validateAdjMatrix(obj){
@@ -211,6 +206,15 @@ Rules:
       }
     }
     return null;
+  }
+
+  function isJunkMatrix(mat){
+    if(!mat || typeof mat!=="object") return true;
+    const badModel = /default|model_name|language_model/i.test(mat.model||"");
+    const downloaded = Date.parse(mat.meta?.downloaded_at||0);
+    const tooOld = Number.isFinite(downloaded) ? downloaded < Date.parse("2024-01-01") : true;
+    const empty = REL_NAMES.every(rel => Array.isArray(mat.slots?.[rel]) && mat.slots[rel].length===0);
+    return badModel || tooOld || empty;
   }
 
   const ADJ_SCHEMA = {
@@ -251,18 +255,13 @@ Rules:
     for(let i=0;i<input.length;i++){h=(h*31+input.charCodeAt(i))>>>0;}
     return h.toString(16).padStart(8,"0");
   }
-  function normalizeTokens(tokens){
-    return tokens.map(t=>t.trim().toLowerCase()).filter(t=>t.length>0);
-  }
-  function tokenizeWords(text){
-    if(!text) return [];
-    const base=text.toLowerCase().replace(/[^a-z0-9\s'-]+/g," ").split(/\s+/).filter(Boolean);
-    const phrases=new Set(base);
-    for(let i=0;i<base.length;i++){
-      if(i+1<base.length) phrases.add(`${base[i]} ${base[i+1]}`);
-      if(i+2<base.length) phrases.add(`${base[i]} ${base[i+1]} ${base[i+2]}`);
-    }
-    return normalizeTokens(Array.from(phrases));
+  function tokenizeWords(s){
+    if(!s) return [];
+    return s
+      .toLowerCase()
+      .replace(/[^a-z0-9'\- ]+/g,' ')
+      .split(/\s+/)
+      .filter(Boolean);
   }
   function scoreCentrality(matrix){
     const totals={}; let maxSlot=0; let global=0;
@@ -373,22 +372,156 @@ Rules:
     }
     return { ...graphState, propagated };
   }
-  function synthesizeEmergentThoughts(stepLogs){
-    if(!Array.isArray(stepLogs)||!stepLogs.length) return "- No new signals.";
-    const bullets=[];
-    for(const step of stepLogs){
-      if(!step.ok) continue;
-      const duration=Math.max(0, Math.round(step.t1-step.t0));
-      const note=step.note?` — ${step.note}`:"";
-      bullets.push(`- ${step.name} completed in ${duration}ms${note}`);
+  function bootstrapFromText(tokens){
+    if(!Array.isArray(tokens)||tokens.length<2) return [];
+    const edges=new Map();
+    const seqW=0.7;
+    const coW=0.3;
+    for(let i=0;i<tokens.length-1;i++){
+      const a=tokens[i];
+      const b=tokens[i+1];
+      if(!a||!b) continue;
+      const key=`${a}|${b}`;
+      edges.set(key,(edges.get(key)||0)+seqW);
     }
-    return bullets.length?bullets.join("\n"):"- Signals inconclusive.";
+    const window=2;
+    for(let i=0;i<tokens.length;i++){
+      for(let j=i+1;j<=i+window && j<tokens.length;j++){
+        const a=tokens[i];
+        const b=tokens[j];
+        if(!a||!b) continue;
+        const key=`${a}|${b}`;
+        edges.set(key,(edges.get(key)||0)+coW/(j-i));
+      }
+    }
+    return Array.from(edges.entries()).map(([key,weight])=>{
+      const [a,b]=key.split("|");
+      return { a, b, w: Math.min(1, weight) };
+    });
+  }
+  function integrateBootstrapEdges(graphState, bootstrapEdges){
+    if(!Array.isArray(bootstrapEdges)||!bootstrapEdges.length) return graphState;
+    const reorganized=new Map(graphState.reorganized||[]);
+    for(const edge of bootstrapEdges){
+      if(!edge||!edge.a||!edge.b) continue;
+      if(!reorganized.has(edge.a)) reorganized.set(edge.a,{ token:edge.a, edges:[] });
+      const node=reorganized.get(edge.a);
+      const score=Number(edge.w||0);
+      node.edges.push({ token:edge.b, rel:"Sequence Of", score:Number(score.toFixed(4)) });
+    }
+    return { ...graphState, reorganized };
+  }
+  function composeInsightGraph({ matrices=[], hierarchyData={}, dynamicData={}, attentionData={}, propagationData={} }={}){
+    const nodes=new Map();
+    const edges=[];
+    const layers = hierarchyData?.layers instanceof Map ? hierarchyData.layers : new Map();
+    const centralityLookup=new Map();
+    for(const matrix of matrices){
+      if(!matrix?.token) continue;
+      centralityLookup.set(matrix.token, scoreCentrality(matrix).total);
+    }
+    const reorganized = dynamicData?.reorganized instanceof Map ? dynamicData.reorganized : new Map();
+    for(const [token,node] of reorganized.entries()){
+      if(!nodes.has(token)){
+        nodes.set(token,{ token, edges:[], centrality:0, layer:layers.get(token) ?? 3, attention:0, propagation:0 });
+      }
+      const entry=nodes.get(token);
+      entry.edges=node.edges.map(edge=>({ token:edge.token, rel:edge.rel, score:Number(edge.score??0) }));
+      for(const edge of entry.edges){
+        edges.push({ a:token, b:edge.token, w:edge.score, rel:edge.rel });
+      }
+    }
+    const attention = attentionData?.embeddings instanceof Map ? attentionData.embeddings : new Map();
+    const propagation = propagationData?.propagated instanceof Map ? propagationData.propagated : new Map();
+    const allTokens=new Set([...centralityLookup.keys(), ...reorganized.keys(), ...attention.keys(), ...propagation.keys()]);
+    for(const token of allTokens){
+      if(!nodes.has(token)){
+        nodes.set(token,{ token, edges:[], centrality:0, layer:layers.get(token) ?? 3, attention:0, propagation:0 });
+      }
+      const entry=nodes.get(token);
+      entry.centrality=Number(centralityLookup.get(token) ?? entry.centrality ?? 0);
+      entry.layer=Number.isFinite(layers.get(token)) ? layers.get(token) : entry.layer ?? 3;
+      entry.attention=Number(attention.get(token) ?? entry.attention ?? 0);
+      entry.propagation=Number(propagation.get(token) ?? entry.propagation ?? 0);
+    }
+    return {
+      nodes:Array.from(nodes.values()).map(node=>({
+        ...node,
+        centrality:Number(node.centrality ?? 0),
+        attention:Number(node.attention ?? 0),
+        propagation:Number(node.propagation ?? 0),
+        layer:Number.isFinite(node.layer) ? node.layer : 3
+      })),
+      edges
+    };
+  }
+  function rankByCentrality(graph){
+    if(!graph) return [];
+    const nodes=Array.isArray(graph.nodes)?graph.nodes:[];
+    return nodes
+      .map(node=>({
+        token:node.token,
+        score:Number(node.centrality ?? 0)+0.5*Number(node.attention ?? 0)+0.25*Number(node.propagation ?? 0)
+      }))
+      .filter(entry=>entry.token)
+      .sort((a,b)=>b.score-a.score);
+  }
+  function findTopBridges(graph){
+    if(!graph) return [];
+    const layerMap=new Map();
+    for(const node of graph.nodes||[]){
+      layerMap.set(node.token, Number.isFinite(node.layer)?node.layer:3);
+    }
+    const edges=(graph.edges||[]).map(edge=>{
+      const layerGap=Math.abs((layerMap.get(edge.a) ?? 3)-(layerMap.get(edge.b) ?? 3));
+      return { a:edge.a, b:edge.b, w:Number(edge.w ?? 0), layerGap, score:layerGap*2+Number(edge.w ?? 0) };
+    });
+    return edges.filter(edge=>edge.a&&edge.b).sort((a,b)=>b.score-a.score).slice(0,10);
+  }
+  function countLayerMoves(graph){
+    if(!graph) return 0;
+    const nodes=Array.isArray(graph.nodes)?graph.nodes:[];
+    return nodes.filter(node=>(node.layer ?? 3) <= 1).length;
+  }
+  function suggestNext(graph){
+    if(!graph) return [];
+    const nodes=Array.isArray(graph.nodes)?graph.nodes:[];
+    return nodes
+      .map(node=>({ token:node.token, value:Number(node.propagation ?? 0)-0.3*Number(node.centrality ?? 0) }))
+      .filter(entry=>entry.token)
+      .sort((a,b)=>b.value-a.value)
+      .map(entry=>entry.token);
+  }
+  function synthesizeEmergentThoughts(graph){
+    const top=rankByCentrality(graph).slice(0,3).map(x=>x.token);
+    const bridges=findTopBridges(graph).slice(0,2).map(edge=>`${edge.a}↔${edge.b}`);
+    const bullets=[];
+    if(top.length) bullets.push(`Core topics converging: ${top.join(", ")}`);
+    if(bridges.length) bullets.push(`Bridging links: ${bridges.join("; ")}`);
+    bullets.push(`Layer reorg: ${countLayerMoves(graph)} tokens shifted upward`);
+    bullets.push(`Attention focus rising on: ${top[0]||"—"}`);
+    const next=suggestNext(graph).slice(0,3);
+    bullets.push(`Next expansions suggested: ${next.length?next.join(", "):"—"}`);
+    while(bullets.length<5){ bullets.push("Signal pending expansion: —"); }
+    return bullets;
+  }
+  function formatRunReport(stepLogs){
+    if(!Array.isArray(stepLogs)||!stepLogs.length) return "No steps recorded.";
+    const lines=[];
+    for(const step of stepLogs){
+      const duration=Math.max(0, Math.round((step.t1??step.t0??0)-(step.t0??0)));
+      const status=step.ok?"✔":"✖";
+      const note=step.note?` — ${step.note}`:"";
+      lines.push(`${status} ${step.name} (${duration}ms)${note}`);
+    }
+    return lines.join("\n");
   }
   function reflectRewrite(original, emergentBullets){
-    const draftId=simpleHash(original+"|"+emergentBullets);
+    const bulletText=Array.isArray(emergentBullets)?emergentBullets.map(b=>`- ${b}`).join("\n"):String(emergentBullets||"");
+    const draftId=simpleHash(original+"|"+bulletText);
     return {
       draftId,
-      payload:`Original answer:\n${original}\n\nSignals (emergent thoughts):\n${emergentBullets}\n\nRewrite the answer to be clearer, better-structured, and more complete. Keep it self-contained. Avoid revealing the internal analysis. Return plain text.`
+      payload:`Original answer:\n${original}\n\nSignals (emergent thoughts):\n${bulletText}\n\nRewrite the answer to be clearer, better-structured, and more complete. Keep it self-contained. Avoid revealing the internal analysis. Return plain text.`
     };
   }
 
@@ -433,8 +566,15 @@ Rules:
     const cached = (await DB.get(normToken)) || (normToken !== token ? await DB.get(token) : null);
     if(cached){
       const cacheErr = validateAdjMatrix(cached);
-      if(!cacheErr) return { matrix:cached, source:"cache" };
-      print(`ℹ ignoring cached matrix for "${token}": ${cacheErr}`);
+      const junk = !cacheErr && isJunkMatrix(cached);
+      if(!junk && !cacheErr) return { matrix:cached, source:"cache" };
+      const keysToDelete = new Set([token, normToken, cached.token]);
+      for(const key of keysToDelete){
+        if(!key) continue;
+        try { await DB.del(key); } catch(_){ /* ignore */ }
+      }
+      const reason = junk ? "junk matrix purged" : cacheErr;
+      print(`ℹ ignoring cached matrix for "${token}": ${reason}`);
     }
     if(!OPENAI_KEY) throw new Error("API key required");
     const user = `token="${token}" — return JSON only.`;
@@ -452,13 +592,14 @@ Rules:
     const text = data?.choices?.[0]?.message?.content ?? "";
     const raw = safeExtractJSON(text);
     if(!raw) throw new Error("Adjacency JSON parse failed");
-    const { out, errs } = sanitizeAdjMatrix(raw,{ token, model:MODEL });
+    const { out, nonEmpty } = sanitizeAdjMatrix(raw,{ token, model:MODEL });
     const vErr = validateAdjMatrix(out);
     if(vErr){
-      const note = errs.length ? ` — notes: ${errs.join("; ")}` : "";
-      throw new Error(`Schema mismatch: ${vErr}${note}`);
+      throw new Error(`Schema mismatch: ${vErr}`);
     }
-    if(errs.length) print(`ℹ normalized "${out.token}" (${errs.length} fixups)`);
+    if(nonEmpty===0){
+      throw new Error("Empty matrix; retrying with stricter seed");
+    }
     await DB.set(out.token, out);
     if(out.token !== normToken) await DB.set(normToken, out);
     if(token !== out.token && token !== normToken) await DB.set(token, out);
@@ -619,6 +760,7 @@ Rules:
       "  ls matrices   -> list cached tokens",
       "  open TOKEN    -> open token’s matrix",
       "  export        -> download all matrices as JSON",
+      "  purge         -> delete junk matrices",
       "  help          -> show this help",
       "Any other input is sent as a prompt."
     ].join("\n"));
@@ -721,8 +863,15 @@ Rules:
     createStepLine("Formalizing hierarchical adjacencies...", runLog.steps).finish(true, `${hierarchy.layers.size} tokens mapped`);
     const cross = crossLevelExpand(inputMatrices, outputMatrices, DEPTH, FANOUT);
     createStepLine("Initiating cross-level recursive expansions...", runLog.steps).finish(true, `${cross.visited.length} visited`);
-    const dynamic = dynamicReorg(cross);
-    const edgeCount = Array.from(dynamic.reorganized.values()).reduce((acc,node)=>acc+node.edges.length,0);
+    let dynamic = dynamicReorg(cross);
+    let edgeCount = Array.from(dynamic.reorganized.values()).reduce((acc,node)=>acc+node.edges.length,0);
+    if(edgeCount===0){
+      const bootstrapEdges = bootstrapFromText([...tokensIn, ...tokensOut]);
+      if(bootstrapEdges.length){
+        dynamic = integrateBootstrapEdges(dynamic, bootstrapEdges);
+        edgeCount = Array.from(dynamic.reorganized.values()).reduce((acc,node)=>acc+node.edges.length,0);
+      }
+    }
     createStepLine("Dynamically reorganizing knowledge at multiple abstraction layers...", runLog.steps).finish(true, `${edgeCount} edges ranked`);
     const attention = attentionEmbed(dynamic);
     const mean = Array.from(attention.embeddings.values()).reduce((acc,val)=>acc+val,0)/(attention.embeddings.size||1);
@@ -732,10 +881,12 @@ Rules:
     const avg = Array.from(propagated.propagated.values()).reduce((acc,val)=>acc+val,0)/(propagated.propagated.size||1);
     createStepLine("Propagating non-local information...", runLog.steps).finish(true, `avg ${avg.toFixed(3)}`);
 
-    runLog.emergentThoughts = synthesizeEmergentThoughts(runLog.steps);
+    const insightGraph = composeInsightGraph({ matrices:combined, hierarchyData:hierarchy, dynamicData:dynamic, attentionData:attention, propagationData:propagated });
+    const emergentBullets = synthesizeEmergentThoughts(insightGraph);
+    runLog.emergentThoughts = emergentBullets.map(b=>`• ${b}`).join("\n");
     printCollapsible("Emergent thoughts", async ()=>runLog.emergentThoughts || "(none)");
 
-    const reflect = reflectRewrite(runLog.originalLLM, runLog.emergentThoughts);
+    const reflect = reflectRewrite(runLog.originalLLM, emergentBullets);
     const refinedChunks=[];
     step = createStepLine("Developing revised response output...", runLog.steps);
     const refinedLine = print("");
@@ -753,6 +904,9 @@ Rules:
     refinedLine.textContent = "";
     print("Refined response:");
     print(runLog.refined,"ok");
+    const report = formatRunReport(runLog.steps);
+    runLog.runReport = report;
+    printCollapsible("Run report", async ()=>report);
   }
 
   inputEl.addEventListener("keydown", async (e)=>{
@@ -782,6 +936,19 @@ Rules:
     }
     if(line==="help") { help(); return; }
     if(line==="ls matrices"){ const keys = await DB.keys(); print(keys.join(", ")||"(none)"); return; }
+    if(line==="purge"){
+      const keys = await DB.keys();
+      let removed=0;
+      for(const key of keys){
+        const mat = await DB.get(key);
+        if(mat && isJunkMatrix(mat)){
+          await DB.del(key);
+          removed++;
+        }
+      }
+      print(removed?`Purged ${removed} junk matrices.`:"No junk matrices detected.");
+      return;
+    }
     if(line.startsWith("open ")) { await showToken(line.slice(5).trim(), { force:true }); return; }
     if(line==="export") { await exportAll(); return; }
     await runPrompt(line);

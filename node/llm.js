@@ -13,21 +13,14 @@ const REL_NAMES = [
 ];
 
 const ADJ_SYS = `
-You MUST return ONLY a single JSON object with EXACT keys and casing:
-{
-  "token": "<lowercased word/phrase>",
-  "model": "<model name>",
-  "version": 1,
-  "slots": {
-    ${REL_NAMES.map((r) => `"${r}": []`).join(",\n    ")}
-  },
-  "meta": { "language":"en", "downloaded_at":"<ISO-8601>", "source":"LLM" }
-}
-Rules:
-- 50 slot keys must ALL exist (empty arrays allowed).
-- Each item in a slot: {"token":"<word/phrase>", "w": <float 0..1>}
-- No extra properties anywhere. No markdown, no backticks, no commentary.
-- Use EXACT slot key names from the list above; do not invent or rename.
+Return ONLY a single JSON object with EXACT keys (no extras). All 50 slots must exist.
+Seed requirement: populate at least 3 neighbors (w>0) for EACH of these slots if known:
+"Co-occurs With","Associated With","Sequence Of","Represents","Symbolizes","Defines".
+Distribute 3–8 items per populated slot, weights in 0..1 (not all identical), prefer topical coherence.
+Schema:
+{"token": "<lowercase>", "model": "<ignored>", "version":1,
+ "slots": { ...50 exact keys... }, "meta":{"language":"en","downloaded_at":"<ISO>","source":"LLM"}}
+Return JSON only.
 `;
 
 const SLOTS_CANON_MAP = (() => {
@@ -60,56 +53,33 @@ function safeExtractJSON(s) {
 }
 
 function sanitizeAdjMatrix(raw, { token, model }) {
-  const now = new Date().toISOString();
   const out = {
-    token: String(raw?.token ?? token).toLowerCase().trim(),
-    model: String(raw?.model ?? model),
+    token: String(token).toLowerCase().trim(),
+    model: String(model),
     version: 1,
     slots: Object.fromEntries(REL_NAMES.map((r) => [r, []])),
     meta: {
       language: "en",
-      downloaded_at: now,
+      downloaded_at: new Date().toISOString(),
       source: "LLM"
     }
   };
-  const errs = [];
-  const meta = raw?.meta;
-  if (meta && typeof meta === "object") {
-    if (typeof meta.downloaded_at === "string") {
-      out.meta.downloaded_at = meta.downloaded_at;
-    }
-  }
+  let nonEmpty = 0;
   const slots = raw?.slots && typeof raw.slots === "object" ? raw.slots : {};
-  for (const [k, v] of Object.entries(slots)) {
-    const canon = SLOTS_CANON_MAP[(k || "").replace(/\s+/g, "").toLowerCase()];
-    if (!canon) {
-      errs.push(`Unknown slot key "${k}" ignored`);
-      continue;
-    }
-    if (!Array.isArray(v)) {
-      errs.push(`Slot "${canon}" not an array; coerced to []`);
-      continue;
-    }
-    for (let idx = 0; idx < v.length; idx++) {
-      const item = v[idx] ?? {};
-      const t = (item.token ?? item.word ?? item.t ?? "").toString().trim();
-      if (!t) {
-        errs.push(`slots["${canon}"][${idx}].token empty → dropped`);
-        continue;
-      }
-      let rawW = Number(item.w);
-      if (!Number.isFinite(rawW)) {
-        errs.push(`slots["${canon}"][${idx}].w not number → 0`);
-        rawW = 0;
-      }
-      const w = clamp(rawW, 0, 1);
-      if (w !== rawW) {
-        errs.push(`slots["${canon}"][${idx}].w clamped to ${w}`);
-      }
-      out.slots[canon].push({ token: t.toLowerCase(), w });
+  for (const [key, value] of Object.entries(slots)) {
+    const canon = SLOTS_CANON_MAP[(key || "").replace(/\s+/g, "").toLowerCase()];
+    if (!canon || !Array.isArray(value)) continue;
+    for (const entry of value) {
+      const t = String(entry?.token ?? "").toLowerCase().trim();
+      let w = Number(entry?.w);
+      if (!t) continue;
+      if (!Number.isFinite(w)) w = 0;
+      w = clamp(w, 0, 1);
+      out.slots[canon].push({ token: t, w });
+      if (w > 0) nonEmpty++;
     }
   }
-  return { out, errs };
+  return { out, nonEmpty };
 }
 
 function validateAdjMatrix(obj) {
@@ -213,14 +183,13 @@ async function requestJSON({ apiKey, model, token }) {
   const text = data?.choices?.[0]?.message?.content ?? "";
   const raw = safeExtractJSON(text);
   if (!raw) throw new Error("Adjacency JSON parse failed");
-  const { out, errs } = sanitizeAdjMatrix(raw, { token, model });
+  const { out, nonEmpty } = sanitizeAdjMatrix(raw, { token, model });
   const vErr = validateAdjMatrix(out);
   if (vErr) {
-    const note = errs.length ? ` — notes: ${errs.join("; ")}` : "";
-    throw new Error(`Schema mismatch: ${vErr}${note}`);
+    throw new Error(`Schema mismatch: ${vErr}`);
   }
-  if (errs.length) {
-    console.log(`ℹ normalized "${out.token}" (${errs.length} fixups)`);
+  if (nonEmpty === 0) {
+    throw new Error("Empty matrix; retrying with stricter seed");
   }
   return out;
 }
@@ -239,4 +208,13 @@ export async function getAdjMatrix({ apiKey, model, token, retries = 4 }) {
     }
   }
   throw new Error("Failed to fetch adjacency matrix");
+}
+
+export function isJunkMatrix(mat) {
+  if (!mat || typeof mat !== "object") return true;
+  const badModel = /default|model_name|language_model/i.test(mat.model || "");
+  const downloaded = Date.parse(mat.meta?.downloaded_at || 0);
+  const tooOld = Number.isFinite(downloaded) ? downloaded < Date.parse("2024-01-01") : true;
+  const empty = REL_NAMES.every((rel) => Array.isArray(mat.slots?.[rel]) && mat.slots[rel].length === 0);
+  return badModel || tooOld || empty;
 }

@@ -69,3 +69,17 @@ export function exportAll(dest = path.join(ROOT, "export.json")) {
   writeJSON(dest, bundle);
   return dest;
 }
+
+export function deleteMatrix(token) {
+  ensureDir();
+  const slug = slugify(token);
+  const file = path.join(ROOT, `${slug}.json`);
+  if (fs.existsSync(file)) {
+    fs.unlinkSync(file);
+  }
+  const index = readJSON(INDEX_FILE) || [];
+  const next = index.filter((t) => t !== token);
+  if (next.length !== index.length) {
+    writeJSON(INDEX_FILE, next);
+  }
+}
