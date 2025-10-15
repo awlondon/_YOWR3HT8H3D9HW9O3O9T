@@ -8,25 +8,13 @@ function simpleHash(input) {
   return h.toString(16).padStart(8, "0");
 }
 
-function normalizeTokens(tokens) {
-  return tokens
-    .map((t) => t.trim().toLowerCase())
-    .filter((t) => t.length > 0);
-}
-
-export function tokenizeWords(text) {
-  if (!text) return [];
-  const base = text
+export function tokenizeWords(s) {
+  if (!s) return [];
+  return s
     .toLowerCase()
-    .replace(/[^a-z0-9\s'-]+/g, " ")
+    .replace(/[^a-z0-9'\- ]+/g, " ")
     .split(/\s+/)
     .filter(Boolean);
-  const phrases = new Set(base);
-  for (let i = 0; i < base.length; i++) {
-    if (i + 1 < base.length) phrases.add(`${base[i]} ${base[i + 1]}`);
-    if (i + 2 < base.length) phrases.add(`${base[i]} ${base[i + 1]} ${base[i + 2]}`);
-  }
-  return normalizeTokens(Array.from(phrases));
 }
 
 export function scoreCentrality(matrix) {
@@ -171,22 +159,219 @@ export function propagateNonLocal(graphState) {
   return { ...graphState, propagated };
 }
 
-export function synthesizeEmergentThoughts(stepLogs) {
-  if (!Array.isArray(stepLogs) || !stepLogs.length) return "- No new signals.";
-  const bullets = [];
-  for (const step of stepLogs) {
-    if (!step.ok) continue;
-    const duration = Math.max(0, Math.round(step.t1 - step.t0));
-    const note = step.note ? ` — ${step.note}` : "";
-    bullets.push(`- ${step.name} completed in ${duration}ms${note}`);
+export function bootstrapFromText(tokens) {
+  if (!Array.isArray(tokens) || tokens.length < 2) return [];
+  const edges = new Map();
+  const seqW = 0.7;
+  const coW = 0.3;
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const a = tokens[i];
+    const b = tokens[i + 1];
+    if (!a || !b) continue;
+    const key = `${a}|${b}`;
+    edges.set(key, (edges.get(key) || 0) + seqW);
   }
-  return bullets.length ? bullets.join("\n") : "- Signals inconclusive.";
+  const window = 2;
+  for (let i = 0; i < tokens.length; i++) {
+    for (let j = i + 1; j <= i + window && j < tokens.length; j++) {
+      const a = tokens[i];
+      const b = tokens[j];
+      if (!a || !b) continue;
+      const key = `${a}|${b}`;
+      edges.set(key, (edges.get(key) || 0) + coW / (j - i));
+    }
+  }
+  return Array.from(edges.entries()).map(([key, weight]) => {
+    const [a, b] = key.split("|");
+    return { a, b, w: Math.min(1, weight) };
+  });
+}
+
+export function integrateBootstrapEdges(graphState, bootstrapEdges) {
+  if (!Array.isArray(bootstrapEdges) || !bootstrapEdges.length) return graphState;
+  const reorganized = new Map(graphState.reorganized || []);
+  for (const edge of bootstrapEdges) {
+    if (!edge || !edge.a || !edge.b) continue;
+    if (!reorganized.has(edge.a)) {
+      reorganized.set(edge.a, { token: edge.a, edges: [] });
+    }
+    const node = reorganized.get(edge.a);
+    const score = Number(edge.w || 0);
+    node.edges.push({ token: edge.b, rel: "Sequence Of", score: Number(score.toFixed(4)) });
+  }
+  return { ...graphState, reorganized };
+}
+
+export function composeInsightGraph({
+  matrices = [],
+  hierarchyData = {},
+  dynamicData = {},
+  attentionData = {},
+  propagationData = {}
+} = {}) {
+  const nodes = new Map();
+  const edges = [];
+  const layers = hierarchyData?.layers instanceof Map ? hierarchyData.layers : new Map();
+  const centralityLookup = new Map();
+  for (const matrix of matrices) {
+    if (!matrix?.token) continue;
+    centralityLookup.set(matrix.token, scoreCentrality(matrix).total);
+  }
+  const reorganized = dynamicData?.reorganized instanceof Map ? dynamicData.reorganized : new Map();
+  for (const [token, node] of reorganized.entries()) {
+    if (!nodes.has(token)) {
+      nodes.set(token, {
+        token,
+        edges: [],
+        centrality: 0,
+        layer: layers.get(token) ?? 3,
+        attention: 0,
+        propagation: 0
+      });
+    }
+    const entry = nodes.get(token);
+    entry.edges = node.edges.map((edge) => ({
+      token: edge.token,
+      rel: edge.rel,
+      score: Number(edge.score ?? 0)
+    }));
+    for (const edge of entry.edges) {
+      edges.push({
+        a: token,
+        b: edge.token,
+        w: edge.score,
+        rel: edge.rel
+      });
+    }
+  }
+  const attention = attentionData?.embeddings instanceof Map ? attentionData.embeddings : new Map();
+  const propagation = propagationData?.propagated instanceof Map ? propagationData.propagated : new Map();
+  const allTokens = new Set([
+    ...centralityLookup.keys(),
+    ...reorganized.keys(),
+    ...attention.keys(),
+    ...propagation.keys()
+  ]);
+  for (const token of allTokens) {
+    if (!nodes.has(token)) {
+      nodes.set(token, {
+        token,
+        edges: [],
+        centrality: 0,
+        layer: layers.get(token) ?? 3,
+        attention: 0,
+        propagation: 0
+      });
+    }
+    const entry = nodes.get(token);
+    entry.centrality = Number(centralityLookup.get(token) ?? entry.centrality ?? 0);
+    entry.layer = Number.isFinite(layers.get(token)) ? layers.get(token) : entry.layer ?? 3;
+    entry.attention = Number(attention.get(token) ?? entry.attention ?? 0);
+    entry.propagation = Number(propagation.get(token) ?? entry.propagation ?? 0);
+  }
+  return {
+    nodes: Array.from(nodes.values()).map((node) => ({
+      ...node,
+      centrality: Number(node.centrality ?? 0),
+      attention: Number(node.attention ?? 0),
+      propagation: Number(node.propagation ?? 0),
+      layer: Number.isFinite(node.layer) ? node.layer : 3
+    })),
+    edges
+  };
+}
+
+export function rankByCentrality(graph) {
+  if (!graph) return [];
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  return nodes
+    .map((node) => ({
+      token: node.token,
+      score:
+        Number(node.centrality ?? 0) +
+        0.5 * Number(node.attention ?? 0) +
+        0.25 * Number(node.propagation ?? 0)
+    }))
+    .filter((entry) => entry.token)
+    .sort((a, b) => b.score - a.score);
+}
+
+export function findTopBridges(graph) {
+  if (!graph) return [];
+  const layerMap = new Map();
+  for (const node of graph.nodes || []) {
+    layerMap.set(node.token, Number.isFinite(node.layer) ? node.layer : 3);
+  }
+  const edges = (graph.edges || []).map((edge) => {
+    const layerGap = Math.abs((layerMap.get(edge.a) ?? 3) - (layerMap.get(edge.b) ?? 3));
+    return {
+      a: edge.a,
+      b: edge.b,
+      w: Number(edge.w ?? 0),
+      layerGap,
+      score: layerGap * 2 + Number(edge.w ?? 0)
+    };
+  });
+  return edges
+    .filter((edge) => edge.a && edge.b)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+}
+
+export function countLayerMoves(graph) {
+  if (!graph) return 0;
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  return nodes.filter((node) => (node.layer ?? 3) <= 1).length;
+}
+
+export function suggestNext(graph) {
+  if (!graph) return [];
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  return nodes
+    .map((node) => ({
+      token: node.token,
+      value: Number(node.propagation ?? 0) - 0.3 * Number(node.centrality ?? 0)
+    }))
+    .filter((entry) => entry.token)
+    .sort((a, b) => b.value - a.value)
+    .map((entry) => entry.token);
+}
+
+export function synthesizeEmergentThoughts(graph) {
+  const top = rankByCentrality(graph).slice(0, 3).map((x) => x.token);
+  const bridges = findTopBridges(graph).slice(0, 2).map((edge) => `${edge.a}↔${edge.b}`);
+  const bullets = [];
+  if (top.length) bullets.push(`Core topics converging: ${top.join(", ")}`);
+  if (bridges.length) bullets.push(`Bridging links: ${bridges.join("; ")}`);
+  bullets.push(`Layer reorg: ${countLayerMoves(graph)} tokens shifted upward`);
+  bullets.push(`Attention focus rising on: ${top[0] || "—"}`);
+  const next = suggestNext(graph).slice(0, 3);
+  bullets.push(`Next expansions suggested: ${next.length ? next.join(", ") : "—"}`);
+  while (bullets.length < 5) {
+    bullets.push("Signal pending expansion: —");
+  }
+  return bullets;
+}
+
+export function formatRunReport(stepLogs) {
+  if (!Array.isArray(stepLogs) || !stepLogs.length) return "No steps recorded.";
+  const lines = [];
+  for (const step of stepLogs) {
+    const duration = Math.max(0, Math.round((step.t1 ?? step.t0 ?? 0) - (step.t0 ?? 0)));
+    const status = step.ok ? "✔" : "✖";
+    const note = step.note ? ` — ${step.note}` : "";
+    lines.push(`${status} ${step.name} (${duration}ms)${note}`);
+  }
+  return lines.join("\n");
 }
 
 export function reflectRewrite(original, emergentBullets) {
-  const draftId = simpleHash(original + "|" + emergentBullets);
+  const bulletText = Array.isArray(emergentBullets)
+    ? emergentBullets.map((b) => `- ${b}`).join("\n")
+    : String(emergentBullets || "");
+  const draftId = simpleHash(original + "|" + bulletText);
   return {
     draftId,
-    payload: `Original answer:\n${original}\n\nSignals (emergent thoughts):\n${emergentBullets}\n\nRewrite the answer to be clearer, better-structured, and more complete. Keep it self-contained. Avoid revealing the internal analysis. Return plain text.`
+    payload: `Original answer:\n${original}\n\nSignals (emergent thoughts):\n${bulletText}\n\nRewrite the answer to be clearer, better-structured, and more complete. Keep it self-contained. Avoid revealing the internal analysis. Return plain text.`
   };
 }

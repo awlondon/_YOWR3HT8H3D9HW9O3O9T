@@ -2,8 +2,8 @@
 import readline from "node:readline";
 import process from "node:process";
 
-import { streamChat, getAdjMatrix } from "./llm.js";
-import { loadMatrix, saveMatrix, listTokens, exportAll } from "./storage.js";
+import { streamChat, getAdjMatrix, isJunkMatrix } from "./llm.js";
+import { loadMatrix, saveMatrix, listTokens, exportAll, deleteMatrix } from "./storage.js";
 import {
   tokenizeWords,
   formalizeHierarchy,
@@ -13,7 +13,10 @@ import {
   propagateNonLocal,
   synthesizeEmergentThoughts,
   reflectRewrite,
-  scoreCentrality
+  bootstrapFromText,
+  integrateBootstrapEdges,
+  composeInsightGraph,
+  formatRunReport
 } from "../shared/engine.js";
 import { validateAdjacencyMatrix } from "../shared/schema.js";
 import { buildMainMessages, REFLECT_SYSTEM_PROMPT } from "../shared/prompts.js";
@@ -26,9 +29,10 @@ let API_KEY = process.env.OPENAI_API_KEY || null;
 let lastOriginal = "";
 let lastThoughts = "";
 let lastRefined = "";
+let lastRunReport = "";
 
 function printHelp() {
-  console.log(`Commands:\n  model <name>     -> set model (current: ${MODEL})\n  depth <n>        -> set expansion depth (current: ${DEPTH})\n  fanout <k>       -> set per-slot fanout (current: ${FANOUT})\n  ls matrices      -> list cached tokens\n  open <TOKEN>     -> open token's matrix\n  export           -> write matrices/export.json\n  toggle original  -> show or hide last original output\n  toggle thoughts  -> show or hide last emergent thoughts\n  help             -> show this help\nAny other input runs the HLSF pipeline.`);
+  console.log(`Commands:\n  model <name>     -> set model (current: ${MODEL})\n  depth <n>        -> set expansion depth (current: ${DEPTH})\n  fanout <k>       -> set per-slot fanout (current: ${FANOUT})\n  ls matrices      -> list cached tokens\n  open <TOKEN>     -> open token's matrix\n  export           -> write matrices/export.json\n  purge            -> delete junk matrices\n  toggle original  -> show or hide last original output\n  toggle thoughts  -> show or hide last emergent thoughts\n  toggle report    -> show or hide the last run report\n  help             -> show this help\nAny other input runs the HLSF pipeline.`);
 }
 
 function askForKey() {
@@ -146,11 +150,16 @@ async function fetchMatrices(tokens, label, logs) {
     state.update(`0 downloaded, 0 cached`);
     for (const token of unique) {
       const cachedMatrix = loadMatrix(token);
-      if (cachedMatrix && validateAdjacencyMatrix(cachedMatrix)) {
-        matrices.push(cachedMatrix);
-        cached++;
-        console.log(`  • ${token} (loaded from cache)`);
-        continue;
+      if (cachedMatrix) {
+        if (isJunkMatrix(cachedMatrix)) {
+          console.log(`  • ${token} (cache invalidated)`);
+          deleteMatrix(token);
+        } else if (validateAdjacencyMatrix(cachedMatrix)) {
+          matrices.push(cachedMatrix);
+          cached++;
+          console.log(`  • ${token} (loaded from cache)`);
+          continue;
+        }
       }
       const matrix = await getAdjMatrix({ apiKey: API_KEY, model: MODEL, token });
       if (!validateAdjacencyMatrix(matrix)) {
@@ -231,7 +240,14 @@ async function runPipeline(prompt) {
   let dynamicData;
   await runStep("Dynamically reorganizing knowledge at multiple abstraction layers", () => {
     dynamicData = dynamicReorg(crossData);
-    const totalEdges = Array.from(dynamicData.reorganized.values()).reduce((acc, node) => acc + node.edges.length, 0);
+    let totalEdges = Array.from(dynamicData.reorganized.values()).reduce((acc, node) => acc + node.edges.length, 0);
+    if (totalEdges === 0) {
+      const bootstrapEdges = bootstrapFromText([...tokensIn, ...tokensOut]);
+      if (bootstrapEdges.length) {
+        dynamicData = integrateBootstrapEdges(dynamicData, bootstrapEdges);
+        totalEdges = Array.from(dynamicData.reorganized.values()).reduce((acc, node) => acc + node.edges.length, 0);
+      }
+    }
     return `${totalEdges} edges ranked`;
   }, logs);
   let attentionData;
@@ -250,12 +266,21 @@ async function runPipeline(prompt) {
     const avg = Array.from(propagationData.propagated.values()).reduce((acc, val) => acc + val, 0) / (propagationData.propagated.size || 1);
     return `avg signal ${avg.toFixed(3)}`;
   }, logs);
-  const centralities = combinedMatrices.map((m) => ({ token: m.token, centrality: scoreCentrality(m).total }));
+  let insightGraph;
+  let emergentBullets = [];
   await runStep("Logging emergent thought stream", () => {
-    lastThoughts = synthesizeEmergentThoughts(logs);
-    return `${centralities.length} tokens analyzed`;
+    insightGraph = composeInsightGraph({
+      matrices: combinedMatrices,
+      hierarchyData,
+      dynamicData,
+      attentionData,
+      propagationData
+    });
+    emergentBullets = synthesizeEmergentThoughts(insightGraph);
+    lastThoughts = emergentBullets.map((b) => `• ${b}`).join("\n");
+    return `${insightGraph.nodes.length} tokens analyzed`;
   }, logs);
-  const reflectData = reflectRewrite(lastOriginal, lastThoughts);
+  const reflectData = reflectRewrite(lastOriginal, emergentBullets);
   const { text: refined } = await runStreamingStep(
     "Developing revised response output",
     async () => {
@@ -269,6 +294,7 @@ async function runPipeline(prompt) {
     logs
   );
   lastRefined = refined;
+  lastRunReport = formatRunReport(logs);
   console.log("Refined response ready. Type 'toggle original' or 'toggle thoughts' to inspect.");
 }
 
@@ -323,6 +349,20 @@ async function main() {
         } else if (trimmed === "toggle thoughts") {
           if (!lastThoughts) console.log("No emergent thoughts yet.");
           else console.log(`--- Emergent Thoughts ---\n${lastThoughts}\n-------------------------`);
+        } else if (trimmed === "toggle report") {
+          if (!lastRunReport) console.log("No run report yet.");
+          else console.log(`--- Run Report ---\n${lastRunReport}\n------------------`);
+        } else if (trimmed === "purge") {
+          const tokens = listTokens();
+          let removed = 0;
+          for (const token of tokens) {
+            const mat = loadMatrix(token);
+            if (mat && isJunkMatrix(mat)) {
+              deleteMatrix(token);
+              removed++;
+            }
+          }
+          console.log(removed ? `Purged ${removed} junk matrices.` : "No junk matrices detected.");
         } else {
           await runPipeline(trimmed);
           if (lastRefined) {
