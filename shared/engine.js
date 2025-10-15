@@ -1,5 +1,30 @@
 import { RELATIONSHIP_NAMES } from "./relationships.js";
 
+export const STOP_TOKENS = new Set([
+  "i","you","he","she","it","we","they","a","an","the","to","of","in","on","at",
+  "is","am","are","be","was","were","do","did","does","not","what","up"
+]);
+
+export const CANON_MAP = new Map([
+  ["what's", "what"],
+  ["i'm", "i"],
+  ["you're", "you"],
+  ["it's", "it"],
+  ["don't", "do not"],
+  ["can't", "cannot"]
+]);
+
+export function canonToken(t) {
+  let value = (t ?? "").toLowerCase().trim();
+  if (!value) return "";
+  if (CANON_MAP.has(value)) {
+    value = CANON_MAP.get(value);
+  }
+  if (value === "i") return "{speaker}";
+  if (value === "you") return "{addressee}";
+  return value;
+}
+
 function simpleHash(input) {
   let h = 0;
   for (let i = 0; i < input.length; i++) {
@@ -10,11 +35,21 @@ function simpleHash(input) {
 
 export function tokenizeWords(s) {
   if (!s) return [];
-  return s
+  const cleaned = s
     .toLowerCase()
-    .replace(/[^a-z0-9'\- ]+/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
+    .replace(/[^a-z0-9'\- ]+/g, " ");
+  const rawTokens = cleaned.split(/\s+/).filter(Boolean);
+  const tokens = [];
+  for (const raw of rawTokens) {
+    const canonical = canonToken(raw);
+    if (!canonical) continue;
+    const pieces = String(canonical).split(/\s+/).filter(Boolean);
+    for (const piece of pieces) {
+      const normalized = canonToken(piece);
+      if (normalized) tokens.push(normalized);
+    }
+  }
+  return tokens;
 }
 
 export function scoreCentrality(matrix) {

@@ -127,6 +127,29 @@
     "Prerequisite Of","Result Of","Context For","Exception Of"
   ];
 
+  const STOP_TOKENS = new Set([
+    "i","you","he","she","it","we","they","a","an","the","to","of","in","on","at",
+    "is","am","are","be","was","were","do","did","does","not","what","up"
+  ]);
+
+  const CANON_MAP = new Map([
+    ["what's","what"],
+    ["i'm","i"],
+    ["you're","you"],
+    ["it's","it"],
+    ["don't","do not"],
+    ["can't","cannot"]
+  ]);
+
+  function canonToken(t){
+    let value = (t ?? "").toLowerCase().trim();
+    if(!value) return "";
+    if(CANON_MAP.has(value)) value = CANON_MAP.get(value);
+    if(value === "i") return "{speaker}";
+    if(value === "you") return "{addressee}";
+    return value;
+  }
+
   const ADJ_BASE = `
 Return ONLY one JSON object, EXACT keys, all 50 slots present (empty arrays allowed).
 Populate at least 12 neighbors total across ≥6 of these slots:
@@ -188,8 +211,9 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
   }
 
   function sanitizeAdjMatrix(raw,{token,model}){
+    const canonical = canonToken(token);
     const out = {
-      token: String(token).toLowerCase().trim(),
+      token: canonical,
       model: String(model),
       version: 1,
       slots: Object.fromEntries(REL_NAMES.map(r=>[r,[]])),
@@ -223,7 +247,7 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
     if(!obj.token) return "missing token";
     if(!obj.model) return "missing model";
     const meta = obj.meta;
-    if(!meta || meta.language!=="en" || (meta.source!=="LLM" && meta.source!=="BOOTSTRAP")) return "bad meta";
+    if(!meta || meta.language!=="en" || (meta.source!=="LLM" && meta.source!=="BOOTSTRAP" && meta.source!=="HEURISTIC")) return "bad meta";
     if(!obj.meta.downloaded_at) return "missing downloaded_at";
     if(!obj.slots || typeof obj.slots!=="object") return "missing slots";
     for(const r of REL_NAMES){
@@ -237,11 +261,15 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
     return null;
   }
 
+  function looksBogusModel(name){
+    return /default|model_name|language_model|gpt-3\.5|text-davinci/i.test(name||"");
+  }
+
   function isJunkMatrix(mat){
     if(!mat || typeof mat!=="object") return true;
-    const badModel = /default|model_name|language_model/i.test(mat.model||"");
+    const badModel = looksBogusModel(mat.model);
     const downloaded = Date.parse(mat.meta?.downloaded_at||0);
-    const tooOld = Number.isFinite(downloaded) ? downloaded < Date.parse("2024-01-01") : true;
+    const tooOld = Number.isFinite(downloaded) ? downloaded < Date.parse("2024-06-01") : true;
     const empty = REL_NAMES.every(rel => Array.isArray(mat.slots?.[rel]) && mat.slots[rel].length===0);
     return badModel || tooOld || empty;
   }
@@ -272,7 +300,7 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
         properties:{
           language:{type:"string",const:"en"},
           downloaded_at:{type:"string"},
-        source:{type:"string",enum:["LLM","BOOTSTRAP"]}
+          source:{type:"string",enum:["LLM","BOOTSTRAP","HEURISTIC"]}
         }
       }
     }
@@ -286,11 +314,62 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
   }
   function tokenizeWords(s){
     if(!s) return [];
-    return s
-      .toLowerCase()
-      .replace(/[^a-z0-9'\- ]+/g,' ')
-      .split(/\s+/)
-      .filter(Boolean);
+    const cleaned = s.toLowerCase().replace(/[^a-z0-9'\- ]+/g,' ');
+    const rawTokens = cleaned.split(/\s+/).filter(Boolean);
+    const tokens = [];
+    for(const raw of rawTokens){
+      const canonical = canonToken(raw);
+      if(!canonical) continue;
+      const pieces = String(canonical).split(/\s+/).filter(Boolean);
+      for(const piece of pieces){
+        const normalized = canonToken(piece);
+        if(normalized) tokens.push(normalized);
+      }
+    }
+    return tokens;
+  }
+
+  function isClosedClass(token){
+    return token.startsWith("{") || STOP_TOKENS.has(token);
+  }
+
+  function buildClosedClassMatrix(token){
+    const slots = Object.fromEntries(REL_NAMES.map(r => [r,[]]));
+    const push = (slot, neighbor, w) => { slots[slot].push({ token: neighbor, w }); };
+    if(token === "{speaker}"){
+      push("Defines","first person singular",0.95);
+      push("Functions As","deictic pronoun",0.88);
+      push("Refers To","author of utterance",0.86);
+      push("Associated With","self reference",0.82);
+      push("Co-occurs With","am",0.74);
+      push("Co-occurs With","my",0.72);
+    } else if(token === "{addressee}"){
+      push("Defines","second person",0.95);
+      push("Functions As","deictic pronoun",0.88);
+      push("Refers To","listener",0.86);
+      push("Associated With","directive",0.80);
+      push("Co-occurs With","are",0.74);
+      push("Co-occurs With","your",0.72);
+    } else {
+      push("Functions As","closed-class token",0.9);
+      push("Associated With","syntactic scaffolding",0.82);
+      push("Co-occurs With","content word",0.6);
+    }
+    return {
+      token,
+      model: String(MODEL || "heuristic"),
+      version:1,
+      slots,
+      meta:{ language:"en", downloaded_at:new Date().toISOString(), source:"HEURISTIC" }
+    };
+  }
+
+  function windowAround(tokens, target, W=3){
+    const idx = tokens.indexOf(target);
+    if(idx < 0) return "";
+    const left = Math.max(0, idx-W);
+    const right = Math.min(tokens.length, idx+W+1);
+    return tokens.slice(left, right).join(" ");
   }
   function scoreCentrality(matrix){
     const totals={}; let maxSlot=0; let global=0;
@@ -638,26 +717,44 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
     return commons.filter(x=>x!==lower).slice(0,6);
   }
 
-  async function getAdjMatrix(token) {
-    const normToken = String(token ?? "").toLowerCase().trim();
-    const cached = (await DB.get(normToken)) || (normToken !== token ? await DB.get(token) : null);
+  async function getAdjMatrix(token, allTokens=[]) {
+    const canonical = canonToken(token);
+    const normalized = canonical || String(token ?? "").toLowerCase().trim();
+    if(canonical && canonical !== token){
+      print(`ℹ canonicalized token → "${canonical}"`, "line");
+    }
+    if(!normalized) throw new Error("Token required");
+    const cached = await DB.get(normalized);
     if(cached){
       const cacheErr = validateAdjMatrix(cached);
       const junk = !cacheErr && isJunkMatrix(cached);
-      if(!junk && !cacheErr) return { matrix:cached, source:"cache" };
-      const keysToDelete = new Set([token, normToken, cached.token]);
-      for(const key of keysToDelete){
-        if(!key) continue;
-        try { await DB.del(key); } catch(_){ /* ignore */ }
+      if(!junk && !cacheErr){
+        const cacheSource = cached.meta?.source === "HEURISTIC" ? "heuristic" : "cache";
+        return { matrix: cached, source: cacheSource };
+      }
+      try { await DB.del(normalized); } catch(_){ }
+      if(cached.token && cached.token !== normalized){
+        try { await DB.del(cached.token); } catch(_){ }
       }
       const reason = junk ? "junk matrix purged" : cacheErr;
-      print(`ℹ ignoring cached matrix for "${token}": ${reason}`);
+      print(`ℹ ignoring cached matrix for "${normalized}": ${reason}`);
     }
+
+    if(isClosedClass(normalized)){
+      const heuristic = buildClosedClassMatrix(normalized);
+      await DB.set(heuristic.token, heuristic);
+      return { matrix: heuristic, source: "heuristic" };
+    }
+
     if(!OPENAI_KEY) throw new Error("API key required");
+
+    const contextTokens = Array.isArray(allTokens)
+      ? allTokens.map(t => canonToken(t)).filter(Boolean)
+      : [];
+    const windowCtx = windowAround(contextTokens, normalized, 4);
+
     const persist = async (matrix) => {
       await DB.set(matrix.token, matrix);
-      if(matrix.token !== normToken) await DB.set(normToken, matrix);
-      if(token !== matrix.token && token !== normToken) await DB.set(token, matrix);
     };
     const parse = (text) => {
       const raw = safeExtractJSON(text);
@@ -665,9 +762,10 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
       return raw;
     };
     const runPass = async (params={}) => {
-      const text = await callAdjLLM({ token, ...params });
+      const context = params.context ?? windowCtx;
+      const text = await callAdjLLM({ token: normalized, context, forced: params.forced });
       const raw = parse(text);
-      const result = sanitizeAdjMatrix(raw,{ token, model:MODEL });
+      const result = sanitizeAdjMatrix(raw,{ token: normalized, model: MODEL });
       const err = validateAdjMatrix(result.out);
       if(err) throw new Error(`Schema mismatch: ${err}`);
       return result;
@@ -676,39 +774,44 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
     let { out, nonEmpty } = await runPass();
     if(nonEmpty >= MIN_NEIGHBORS_BASE){
       await persist(out);
-      return { matrix:out, source: out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download" };
+      const source = out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download";
+      return { matrix: out, source };
     }
     print(PASS1_STATUS);
 
     let context = "";
     try {
-      context = await getContextHint(token);
+      context = await getContextHint(normalized);
     } catch (err) {
       print(`Context hint failed: ${err.message}`);
       context = "";
     }
 
-    ({ out, nonEmpty } = await runPass({ context }));
+    const mergedContext = [windowCtx, context].filter(Boolean).join(" | ");
+
+    ({ out, nonEmpty } = await runPass({ context: mergedContext }));
     if(nonEmpty >= MIN_NEIGHBORS_BASE){
       await persist(out);
-      return { matrix:out, source: out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download" };
+      const source = out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download";
+      return { matrix: out, source };
     }
     print(PASS2_STATUS);
 
-    ({ out, nonEmpty } = await runPass({ context, forced:true }));
+    ({ out, nonEmpty } = await runPass({ context: mergedContext, forced:true }));
     if(nonEmpty >= MIN_NEIGHBORS_FORCED){
       await persist(out);
-      return { matrix:out, source: out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download" };
+      const source = out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download";
+      return { matrix: out, source };
     }
     print(PASS3_STATUS);
 
     out.meta.source = "BOOTSTRAP";
     out.meta.downloaded_at = new Date().toISOString();
-    out.slots["Co-occurs With"] = suggestGenericNeighbors(token).map((t,i)=>({ token:t, w:Math.max(0.3, 0.9 - 0.05*i) }));
+    out.slots["Co-occurs With"] = suggestGenericNeighbors(normalized).map((t,i)=>({ token:t, w:Math.max(0.3, 0.9 - 0.05*i) }));
     const bootstrapErr = validateAdjMatrix(out);
     if(bootstrapErr) throw new Error(`Schema mismatch: ${bootstrapErr}`);
     await persist(out);
-    return { matrix:out, source:"bootstrap" };
+    return { matrix: out, source:"bootstrap" };
   }
 
   // --- Terminal helpers ---
@@ -770,9 +873,11 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
 
   async function showToken(token, { force = false } = {}){
     try {
-      if(!force && shownTokens.has(token)) return;
-      const { matrix, source } = await getAdjMatrix(token);
+      const normalized = canonToken(token) || token;
+      if(!force && shownTokens.has(normalized)) return;
+      const { matrix, source } = await getAdjMatrix(token, [normalized]);
       shownTokens.add(matrix.token);
+      shownTokens.add(normalized);
       const title = `token: "${matrix.token}" [model ${matrix.model}] (${source})`;
       printCollapsible(title, async () => {
         const container = document.createElement("div");
@@ -921,7 +1026,7 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
     step = createStepLine("Downloading LLM input token weights and adjacencies...", runLog.steps);
     try{
       for(const token of tokensIn){
-        const { matrix, source } = await getAdjMatrix(token);
+        const { matrix, source } = await getAdjMatrix(token, tokensIn);
         inputMatrices.push(matrix);
         print(`  ${token} (${source})`);
         showToken(token);
@@ -952,7 +1057,7 @@ using broadly relevant, safe, generic associations. No empty result is allowed.`
     step = createStepLine("Downloading LLM output token weights and adjacencies...", runLog.steps);
     try{
       for(const token of tokensOut){
-        const { matrix, source } = await getAdjMatrix(token);
+        const { matrix, source } = await getAdjMatrix(token, tokensOut);
         outputMatrices.push(matrix);
         print(`  ${token} (${source})`);
         showToken(token);

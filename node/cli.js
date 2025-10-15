@@ -6,6 +6,7 @@ import { streamChat, getAdjMatrix, isJunkMatrix } from "./llm.js";
 import { loadMatrix, saveMatrix, listTokens, exportAll, deleteMatrix } from "./storage.js";
 import {
   tokenizeWords,
+  canonToken,
   formalizeHierarchy,
   crossLevelExpand,
   dynamicReorg,
@@ -143,7 +144,10 @@ async function runStreamingStep(name, factory, logs) {
 
 async function fetchMatrices(tokens, label, logs) {
   const matrices = [];
-  const unique = Array.from(new Set(tokens));
+  const allTokens = Array.isArray(tokens)
+    ? tokens.map((t) => canonToken(t)).filter(Boolean)
+    : [];
+  const unique = Array.from(new Set(allTokens));
   await runStep(label, async (state) => {
     let downloaded = 0;
     let cached = 0;
@@ -161,7 +165,12 @@ async function fetchMatrices(tokens, label, logs) {
           continue;
         }
       }
-      const matrix = await getAdjMatrix({ apiKey: API_KEY, model: MODEL, token });
+      const matrix = await getAdjMatrix({
+        apiKey: API_KEY,
+        model: MODEL,
+        token,
+        allTokens
+      });
       if (!validateAdjacencyMatrix(matrix)) {
         throw new Error(`Invalid adjacency matrix for ${token}`);
       }
@@ -181,14 +190,23 @@ async function openToken(token) {
     console.log("Token required (open <TOKEN>)." );
     return;
   }
+  const normalized = canonToken(token) || token.toLowerCase().trim();
+  if (normalized !== token) {
+    console.log(`ℹ canonicalized token → "${normalized}"`);
+  }
   if (!API_KEY) {
     API_KEY = await askForKey();
   }
-  const matrix = loadMatrix(token);
+  const matrix = loadMatrix(normalized);
   if (!matrix) {
-    console.log(`No cached matrix for "${token}". Fetching...`);
+    console.log(`No cached matrix for "${normalized}". Fetching...`);
     try {
-      const fresh = await getAdjMatrix({ apiKey: API_KEY, model: MODEL, token });
+      const fresh = await getAdjMatrix({
+        apiKey: API_KEY,
+        model: MODEL,
+        token: normalized,
+        allTokens: [normalized]
+      });
       saveMatrix(fresh);
       console.log(JSON.stringify(fresh, null, 2));
     } catch (err) {
