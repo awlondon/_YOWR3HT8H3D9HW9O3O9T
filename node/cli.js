@@ -180,7 +180,6 @@ async function openToken(token) {
     console.log(`No cached matrix for "${token}". Fetching...`);
     try {
       const fresh = await getAdjMatrix({ apiKey: API_KEY, model: MODEL, token });
-      if (!validateAdjacencyMatrix(fresh)) throw new Error("Schema mismatch");
       saveMatrix(fresh);
       console.log(JSON.stringify(fresh, null, 2));
     } catch (err) {

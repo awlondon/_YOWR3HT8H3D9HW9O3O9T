@@ -118,6 +118,101 @@
     "Prerequisite Of","Result Of","Context For","Exception Of"
   ];
 
+  const ADJ_SYS = `
+You MUST return ONLY a single JSON object with EXACT keys and casing:
+{
+  "token": "<lowercased word/phrase>",
+  "model": "<model name>",
+  "version": 1,
+  "slots": {
+    ${REL_NAMES.map((r) => `"${r}": []`).join(",\n    ")}
+  },
+  "meta": { "language":"en", "downloaded_at":"<ISO-8601>", "source":"LLM" }
+}
+Rules:
+- 50 slot keys must ALL exist (empty arrays allowed).
+- Each item in a slot: {"token":"<word/phrase>", "w": <float 0..1>}
+- No extra properties anywhere. No markdown, no backticks, no commentary.
+- Use EXACT slot key names from the list above; do not invent or rename.
+`;
+
+  const SLOTS_CANON_MAP = (() => {
+    const m = {};
+    for (const k of REL_NAMES) {
+      m[k.toLowerCase()] = k;
+      m[k.replace(/\s+/g, "").toLowerCase()] = k;
+    }
+    return m;
+  })();
+
+  const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
+
+  function safeExtractJSON(s){
+    try { return JSON.parse(s); } catch(_){ }
+    const i = s.indexOf("{");
+    const j = s.lastIndexOf("}");
+    if(i>=0 && j>i){
+      try { return JSON.parse(s.slice(i,j+1)); } catch(_){ }
+    }
+    return null;
+  }
+
+  function sanitizeAdjMatrix(raw,{token,model}){
+    const now = new Date().toISOString();
+    const out = {
+      token: String(raw?.token ?? token).toLowerCase().trim(),
+      model: String(raw?.model ?? model),
+      version: 1,
+      slots: Object.fromEntries(REL_NAMES.map(r=>[r,[]])),
+      meta: {
+        language: "en",
+        downloaded_at: now,
+        source: "LLM"
+      }
+    };
+    const errs = [];
+    const meta = raw?.meta;
+    if(meta && typeof meta === "object" && typeof meta.downloaded_at === "string"){
+      out.meta.downloaded_at = meta.downloaded_at;
+    }
+    const slots = raw?.slots && typeof raw.slots === "object" ? raw.slots : {};
+    for(const [k,v] of Object.entries(slots)){
+      const canon = SLOTS_CANON_MAP[(k||"").replace(/\s+/g,"").toLowerCase()];
+      if(!canon){ errs.push(`Unknown slot key "${k}" ignored`); continue; }
+      if(!Array.isArray(v)){ errs.push(`Slot "${canon}" not an array; coerced to []`); continue; }
+      for(let idx=0; idx<v.length; idx++){
+        const item = v[idx] ?? {};
+        const t = (item.token ?? item.word ?? item.t ?? "").toString().trim();
+        if(!t){ errs.push(`slots["${canon}"][${idx}].token empty → dropped`); continue; }
+        let rawW = Number(item.w);
+        if(!Number.isFinite(rawW)){ errs.push(`slots["${canon}"][${idx}].w not number → 0`); rawW = 0; }
+        const w = clamp(rawW,0,1);
+        if(w !== rawW){ errs.push(`slots["${canon}"][${idx}].w clamped to ${w}`); }
+        out.slots[canon].push({ token: t.toLowerCase(), w });
+      }
+    }
+    return { out, errs };
+  }
+
+  function validateAdjMatrix(obj){
+    if(!obj || typeof obj!=="object") return "Not an object";
+    if(obj.version!==1) return "version !== 1";
+    if(!obj.token) return "missing token";
+    if(!obj.model) return "missing model";
+    if(!obj.meta || obj.meta.language!=="en" || obj.meta.source!=="LLM") return "bad meta";
+    if(!obj.meta.downloaded_at) return "missing downloaded_at";
+    if(!obj.slots || typeof obj.slots!=="object") return "missing slots";
+    for(const r of REL_NAMES){
+      if(!Array.isArray(obj.slots[r])) return `missing or non-array slot "${r}"`;
+      for(let i=0;i<obj.slots[r].length;i++){
+        const it = obj.slots[r][i];
+        if(!it || typeof it.token!=="string") return `slots["${r}"][${i}].token invalid`;
+        if(typeof it.w!=="number" || it.w<0 || it.w>1) return `slots["${r}"][${i}].w out of range`;
+      }
+    }
+    return null;
+  }
+
   const ADJ_SCHEMA = {
     type:"object",
     additionalProperties:false,
@@ -149,23 +244,6 @@
       }
     }
   };
-
-  function validateAdj(matrix){
-    if(!matrix || typeof matrix!=="object") return false;
-    if(matrix.version!==1) return false;
-    if(!matrix.token || !matrix.model) return false;
-    if(!matrix.slots || typeof matrix.slots!=="object") return false;
-    for(const rel of REL_NAMES){
-      if(!Array.isArray(matrix.slots[rel])) return false;
-      for(const item of matrix.slots[rel]){
-        if(!item || typeof item!=="object") return false;
-        if(typeof item.token!=="string") return false;
-        if(typeof item.w!=="number"||item.w<0||item.w>1) return false;
-      }
-    }
-    if(!matrix.meta||matrix.meta.language!=="en"||matrix.meta.source!=="LLM") return false;
-    return true;
-  }
 
   // --- HLSF engine (pure functions) ---
   function simpleHash(input){
@@ -351,32 +429,40 @@
   }
 
   async function getAdjMatrix(token) {
-    const cached = await DB.get(token);
-    if(cached && validateAdj(cached)) return { matrix:cached, source:"cache" };
+    const normToken = String(token ?? "").toLowerCase().trim();
+    const cached = (await DB.get(normToken)) || (normToken !== token ? await DB.get(token) : null);
+    if(cached){
+      const cacheErr = validateAdjMatrix(cached);
+      if(!cacheErr) return { matrix:cached, source:"cache" };
+      print(`ℹ ignoring cached matrix for "${token}": ${cacheErr}`);
+    }
     if(!OPENAI_KEY) throw new Error("API key required");
-    const sys = "You produce adjacency matrices for tokens as strict JSON per the provided schema. Tokens are words/phrases (not BPE). Weight scale: 0..1 floats. All 50 relationship slots must be present (empty arrays allowed). No extra keys.";
-    const user = `token="${token}". Return schema-conforming JSON only.`;
+    const user = `token="${token}" — return JSON only.`;
     const res = await fetch("https://api.openai.com/v1/chat/completions",{
       method:"POST",
       headers:{"Content-Type":"application/json","Authorization":"Bearer "+OPENAI_KEY},
       body:JSON.stringify({
         model:MODEL,
-        messages:[{role:"system",content:sys},{role:"user",content:user}],
+        messages:[{role:"system",content:ADJ_SYS},{role:"user",content:user}],
         response_format:{ type:"json_object" }
       })
     });
     if(!res.ok) throw new Error(`OpenAI error: ${res.status}`);
     const data = await res.json();
-    const text = data.choices?.[0]?.message?.content ?? "{}";
-    const matrix = JSON.parse(text);
-    if(!matrix.meta){
-      matrix.meta={ language:"en", downloaded_at:new Date().toISOString(), source:"LLM" };
-    } else if(!matrix.meta.downloaded_at){
-      matrix.meta.downloaded_at=new Date().toISOString();
+    const text = data?.choices?.[0]?.message?.content ?? "";
+    const raw = safeExtractJSON(text);
+    if(!raw) throw new Error("Adjacency JSON parse failed");
+    const { out, errs } = sanitizeAdjMatrix(raw,{ token, model:MODEL });
+    const vErr = validateAdjMatrix(out);
+    if(vErr){
+      const note = errs.length ? ` — notes: ${errs.join("; ")}` : "";
+      throw new Error(`Schema mismatch: ${vErr}${note}`);
     }
-    if(!validateAdj(matrix)) throw new Error("Schema mismatch");
-    await DB.set(token, matrix);
-    return { matrix, source:"download" };
+    if(errs.length) print(`ℹ normalized "${out.token}" (${errs.length} fixups)`);
+    await DB.set(out.token, out);
+    if(out.token !== normToken) await DB.set(normToken, out);
+    if(token !== out.token && token !== normToken) await DB.set(token, out);
+    return { matrix:out, source:"download" };
   }
 
   // --- Terminal helpers ---
