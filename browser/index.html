@@ -127,16 +127,44 @@
     "Prerequisite Of","Result Of","Context For","Exception Of"
   ];
 
-  const ADJ_SYS = `
-Return ONLY a single JSON object with EXACT keys (no extras). All 50 slots must exist.
-Seed requirement: populate at least 3 neighbors (w>0) for EACH of these slots if known:
-"Co-occurs With","Associated With","Sequence Of","Represents","Symbolizes","Defines".
-Distribute 3–8 items per populated slot, weights in 0..1 (not all identical), prefer topical coherence.
-Schema:
-{"token": "<lowercase>", "model": "<ignored>", "version":1,
- "slots": { ...50 exact keys... }, "meta":{"language":"en","downloaded_at":"<ISO>","source":"LLM"}}
-Return JSON only.
-`;
+  const ADJ_BASE = `
+Return ONLY one JSON object, EXACT keys, all 50 slots present (empty arrays allowed).
+Populate at least 12 neighbors total across ≥6 of these slots:
+"Co-occurs With","Associated With","Sequence Of","Defines","Represents","Symbolizes","Refers To".
+Each item: {"token":"<word/phrase>","w":<float 0..1>} (descending by w). No extras, no commentary.`;
+
+  const ADJ_FORCED = `
+Same schema and rules, but if uncertain you MUST still populate ≥24 neighbors total across ≥8 slots
+using broadly relevant, safe, generic associations. No empty result is allowed.`;
+
+  const CONTEXT_HINT_SYS = "Return a single short sentence giving the domain/sense of the given word/phrase, followed by 6 comma-separated key facets. No markdown.";
+
+  const MIN_NEIGHBORS_BASE = 12;
+  const MIN_NEIGHBORS_FORCED = 24;
+
+  const PASS1_STATUS = "Empty matrix → retry with context";
+  const PASS2_STATUS = "Still sparse → forced population";
+  const PASS3_STATUS = "LLM still empty → bootstrap seeding applied";
+
+  const FEWSHOT = {
+    token: "photosynthesis",
+    model: "ignored",
+    version: 1,
+    slots: Object.fromEntries(REL_NAMES.map(name => [name, []]))
+  };
+
+  FEWSHOT.slots["Co-occurs With"] = [
+    { token: "chlorophyll", w: 0.96 },
+    { token: "light energy", w: 0.91 },
+    { token: "carbon dioxide", w: 0.88 }
+  ];
+  FEWSHOT.slots["Defines"] = [
+    { token: "conversion of light to chemical energy", w: 0.93 },
+    { token: "glucose production", w: 0.84 },
+    { token: "oxygen release", w: 0.82 }
+  ];
+
+  const FEWSHOT_STRING = JSON.stringify(FEWSHOT);
 
   const SLOTS_CANON_MAP = (() => {
     const m = {};
@@ -194,7 +222,8 @@ Return JSON only.
     if(obj.version!==1) return "version !== 1";
     if(!obj.token) return "missing token";
     if(!obj.model) return "missing model";
-    if(!obj.meta || obj.meta.language!=="en" || obj.meta.source!=="LLM") return "bad meta";
+    const meta = obj.meta;
+    if(!meta || meta.language!=="en" || (meta.source!=="LLM" && meta.source!=="BOOTSTRAP")) return "bad meta";
     if(!obj.meta.downloaded_at) return "missing downloaded_at";
     if(!obj.slots || typeof obj.slots!=="object") return "missing slots";
     for(const r of REL_NAMES){
@@ -243,7 +272,7 @@ Return JSON only.
         properties:{
           language:{type:"string",const:"en"},
           downloaded_at:{type:"string"},
-          source:{type:"string",const:"LLM"}
+        source:{type:"string",enum:["LLM","BOOTSTRAP"]}
         }
       }
     }
@@ -561,6 +590,54 @@ Return JSON only.
     }
   }
 
+  async function getContextHint(token){
+    const res = await fetch("https://api.openai.com/v1/chat/completions",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":"Bearer "+OPENAI_KEY},
+      body:JSON.stringify({
+        model:MODEL,
+        temperature:0.4,
+        messages:[
+          { role:"system", content:CONTEXT_HINT_SYS },
+          { role:"user", content:`Token: "${token}"` }
+        ]
+      })
+    });
+    if(!res.ok) throw new Error(`OpenAI ${res.status}`);
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content || "";
+    return text.slice(0,300);
+  }
+
+  async function callAdjLLM({ token, context, forced=false }){
+    const sys = (forced?ADJ_FORCED:ADJ_BASE)+
+      `\nSchema:\n{"token":"<lowercase>","model":"<ignored>","version":1,"slots":{...50 keys...},"meta":{"language":"en","downloaded_at":"<ISO>","source":"LLM"}}`;
+    const user = `token="${String(token).toLowerCase()}". Context: ${context||"n/a"}. Example JSON (style only):\n${FEWSHOT_STRING}`;
+    const res = await fetch("https://api.openai.com/v1/chat/completions",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":"Bearer "+OPENAI_KEY},
+      body:JSON.stringify({
+        model:MODEL,
+        temperature: forced?0.6:0.4,
+        top_p:0.95,
+        messages:[
+          { role:"system", content:sys },
+          { role:"user", content:user }
+        ],
+        response_format:{ type:"json_object" }
+      })
+    });
+    if(!res.ok) throw new Error(`OpenAI ${res.status}`);
+    const data = await res.json();
+    return data?.choices?.[0]?.message?.content || "{}";
+  }
+
+  function suggestGenericNeighbors(t){
+    const commons = ["meaning","context","usage","definition","example","related term","synonym"];
+    const lower = String(t||"").toLowerCase();
+    return commons.filter(x=>x!==lower).slice(0,6);
+  }
+
   async function getAdjMatrix(token) {
     const normToken = String(token ?? "").toLowerCase().trim();
     const cached = (await DB.get(normToken)) || (normToken !== token ? await DB.get(token) : null);
@@ -577,33 +654,61 @@ Return JSON only.
       print(`ℹ ignoring cached matrix for "${token}": ${reason}`);
     }
     if(!OPENAI_KEY) throw new Error("API key required");
-    const user = `token="${token}" — return JSON only.`;
-    const res = await fetch("https://api.openai.com/v1/chat/completions",{
-      method:"POST",
-      headers:{"Content-Type":"application/json","Authorization":"Bearer "+OPENAI_KEY},
-      body:JSON.stringify({
-        model:MODEL,
-        messages:[{role:"system",content:ADJ_SYS},{role:"user",content:user}],
-        response_format:{ type:"json_object" }
-      })
-    });
-    if(!res.ok) throw new Error(`OpenAI error: ${res.status}`);
-    const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content ?? "";
-    const raw = safeExtractJSON(text);
-    if(!raw) throw new Error("Adjacency JSON parse failed");
-    const { out, nonEmpty } = sanitizeAdjMatrix(raw,{ token, model:MODEL });
-    const vErr = validateAdjMatrix(out);
-    if(vErr){
-      throw new Error(`Schema mismatch: ${vErr}`);
+    const persist = async (matrix) => {
+      await DB.set(matrix.token, matrix);
+      if(matrix.token !== normToken) await DB.set(normToken, matrix);
+      if(token !== matrix.token && token !== normToken) await DB.set(token, matrix);
+    };
+    const parse = (text) => {
+      const raw = safeExtractJSON(text);
+      if(!raw) throw new Error("Adjacency JSON parse failed");
+      return raw;
+    };
+    const runPass = async (params={}) => {
+      const text = await callAdjLLM({ token, ...params });
+      const raw = parse(text);
+      const result = sanitizeAdjMatrix(raw,{ token, model:MODEL });
+      const err = validateAdjMatrix(result.out);
+      if(err) throw new Error(`Schema mismatch: ${err}`);
+      return result;
+    };
+
+    let { out, nonEmpty } = await runPass();
+    if(nonEmpty >= MIN_NEIGHBORS_BASE){
+      await persist(out);
+      return { matrix:out, source: out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download" };
     }
-    if(nonEmpty===0){
-      throw new Error("Empty matrix; retrying with stricter seed");
+    print(PASS1_STATUS);
+
+    let context = "";
+    try {
+      context = await getContextHint(token);
+    } catch (err) {
+      print(`Context hint failed: ${err.message}`);
+      context = "";
     }
-    await DB.set(out.token, out);
-    if(out.token !== normToken) await DB.set(normToken, out);
-    if(token !== out.token && token !== normToken) await DB.set(token, out);
-    return { matrix:out, source:"download" };
+
+    ({ out, nonEmpty } = await runPass({ context }));
+    if(nonEmpty >= MIN_NEIGHBORS_BASE){
+      await persist(out);
+      return { matrix:out, source: out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download" };
+    }
+    print(PASS2_STATUS);
+
+    ({ out, nonEmpty } = await runPass({ context, forced:true }));
+    if(nonEmpty >= MIN_NEIGHBORS_FORCED){
+      await persist(out);
+      return { matrix:out, source: out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download" };
+    }
+    print(PASS3_STATUS);
+
+    out.meta.source = "BOOTSTRAP";
+    out.meta.downloaded_at = new Date().toISOString();
+    out.slots["Co-occurs With"] = suggestGenericNeighbors(token).map((t,i)=>({ token:t, w:Math.max(0.3, 0.9 - 0.05*i) }));
+    const bootstrapErr = validateAdjMatrix(out);
+    if(bootstrapErr) throw new Error(`Schema mismatch: ${bootstrapErr}`);
+    await persist(out);
+    return { matrix:out, source:"bootstrap" };
   }
 
   // --- Terminal helpers ---
