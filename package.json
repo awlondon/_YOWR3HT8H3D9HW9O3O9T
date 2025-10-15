@@ -1,0 +1,9 @@
+{
+  "name": "hlsf-lite",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "HLSF Lite dual-interface toolkit",
+  "bin": {
+    "hlsf-lite": "./node/cli.js"
+  }
+}

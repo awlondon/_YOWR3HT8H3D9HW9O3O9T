@@ -1,0 +1,709 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>HLSF Lite</title>
+  <style>
+    body { margin:0; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:#0c0c0c; color:#ddd; }
+    #topbar { display:flex; align-items:center; justify-content:space-between; padding:8px 12px; border-bottom:1px solid #222; background:#101010; }
+    #term { padding:12px; height: calc(100vh - 104px); overflow:auto; }
+    #promptBar { position:fixed; bottom:0; left:0; right:0; background:#111; border-top:1px solid #222; padding:8px 12px; }
+    #in { width:100%; background:#000; color:#0f0; border:0; outline:none; padding:8px; font:inherit; }
+    .line { white-space:pre-wrap; margin:4px 0; }
+    .collapsible { cursor:pointer; color:#9cf; }
+    .indent { margin-left:16px; white-space:pre-wrap; }
+    .ok { color:#6f6; }
+    .fail { color:#f66; }
+    .spinner { display:inline-block; width:1em; color:#9cf; }
+    a { color:#9cf; }
+    button { background:#1a1a1a; color:#ddd; border:1px solid #333; padding:4px 8px; cursor:pointer; }
+    button:hover { background:#222; }
+    #dirView { display:none; position:fixed; top:10%; left:10%; right:10%; bottom:10%; background:#050505; border:1px solid #333; padding:16px; overflow:auto; box-shadow:0 0 12px rgba(0,0,0,0.6); }
+    #dirView h2 { margin-top:0; }
+    #dirClose { float:right; }
+    .token-link { color:#9f9; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <div>HLSF Lite Browser Terminal</div>
+    <div>
+      <button id="openDir">Open matrices directory</button>
+    </div>
+  </div>
+  <div id="term"></div>
+  <div id="promptBar"><input id="in" placeholder="Enter prompt or command…" autocomplete="off"/></div>
+  <div id="dirView">
+    <button id="dirClose">Close</button>
+    <h2>Cached Matrices</h2>
+    <div id="dirList"></div>
+  </div>
+  <script type="module">
+  // --- tiny IndexedDB helper (key -> JSON) ---
+  const DB = (() => {
+    const DB_NAME = "hlsf-lite";
+    const STORE = "matrices";
+    function open() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          req.result.createObjectStore(STORE);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    async function get(key) {
+      const db = await open();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readonly");
+        const req = tx.objectStore(STORE).get(key);
+        req.onsuccess = () => resolve(req.result ?? null);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    async function set(key, value) {
+      const db = await open();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+    async function keys() {
+      const db = await open();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readonly");
+        const req = tx.objectStore(STORE).getAllKeys();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    return { get, set, keys };
+  })();
+
+  // --- Spinner helper ---
+  function createSpinner(element) {
+    const frames = ["◐", "◓", "◑", "◒"];
+    let frame = 0;
+    let active = true;
+    const span = document.createElement("span");
+    span.className = "spinner";
+    element.prepend(span);
+    const timer = setInterval(() => {
+      if (!active) return;
+      span.textContent = frames[frame];
+      frame = (frame + 1) % frames.length;
+    }, 120);
+    return {
+      stop(finalText) {
+        active = false;
+        clearInterval(timer);
+        span.textContent = finalText || "";
+      }
+    };
+  }
+
+  // --- relationships + schema ---
+  const REL_NAMES = [
+    "Identity","Contains","Is Contained By","Variant","Is Instance Of","Has Instance",
+    "Is Type Of","Has Type","Part Of","Composes","Mirrors","Inverts","Parallel To",
+    "Adjacent To","Next","Sequence Of","Preceded By","Follows","Spatially Above",
+    "Spatially Below","Symbolically Supports","Symbolically Depends","Contrasts",
+    "Complements","Associated With","Correlates With","Causes","Caused By","Evokes",
+    "Represents","Symbolizes","Refers To","Defines","Is Defined By","Transforms To",
+    "Transformed From","Functions As","Interpreted As","Used With","Co-occurs With",
+    "Synthesizes","Divides Into","Opposes","Generalizes","Specializes","Analogous To",
+    "Prerequisite Of","Result Of","Context For","Exception Of"
+  ];
+
+  const ADJ_SCHEMA = {
+    type:"object",
+    additionalProperties:false,
+    required:["token","model","version","slots","meta"],
+    properties:{
+      token:{type:"string"},
+      model:{type:"string"},
+      version:{type:"integer",const:1},
+      slots:{
+        type:"object",
+        additionalProperties:false,
+        properties:Object.fromEntries(REL_NAMES.map(r=>[r,{type:"array",items:{
+          type:"object",
+          additionalProperties:false,
+          required:["token","w"],
+          properties:{ token:{type:"string"}, w:{type:"number",minimum:0,maximum:1} }
+        }}])),
+        required:REL_NAMES
+      },
+      meta:{
+        type:"object",
+        additionalProperties:false,
+        required:["language","downloaded_at","source"],
+        properties:{
+          language:{type:"string",const:"en"},
+          downloaded_at:{type:"string"},
+          source:{type:"string",const:"LLM"}
+        }
+      }
+    }
+  };
+
+  function validateAdj(matrix){
+    if(!matrix || typeof matrix!=="object") return false;
+    if(matrix.version!==1) return false;
+    if(!matrix.token || !matrix.model) return false;
+    if(!matrix.slots || typeof matrix.slots!=="object") return false;
+    for(const rel of REL_NAMES){
+      if(!Array.isArray(matrix.slots[rel])) return false;
+      for(const item of matrix.slots[rel]){
+        if(!item || typeof item!=="object") return false;
+        if(typeof item.token!=="string") return false;
+        if(typeof item.w!=="number"||item.w<0||item.w>1) return false;
+      }
+    }
+    if(!matrix.meta||matrix.meta.language!=="en"||matrix.meta.source!=="LLM") return false;
+    return true;
+  }
+
+  // --- HLSF engine (pure functions) ---
+  function simpleHash(input){
+    let h=0;
+    for(let i=0;i<input.length;i++){h=(h*31+input.charCodeAt(i))>>>0;}
+    return h.toString(16).padStart(8,"0");
+  }
+  function normalizeTokens(tokens){
+    return tokens.map(t=>t.trim().toLowerCase()).filter(t=>t.length>0);
+  }
+  function tokenizeWords(text){
+    if(!text) return [];
+    const base=text.toLowerCase().replace(/[^a-z0-9\s'-]+/g," ").split(/\s+/).filter(Boolean);
+    const phrases=new Set(base);
+    for(let i=0;i<base.length;i++){
+      if(i+1<base.length) phrases.add(`${base[i]} ${base[i+1]}`);
+      if(i+2<base.length) phrases.add(`${base[i]} ${base[i+1]} ${base[i+2]}`);
+    }
+    return normalizeTokens(Array.from(phrases));
+  }
+  function scoreCentrality(matrix){
+    const totals={}; let maxSlot=0; let global=0;
+    for(const rel of REL_NAMES){
+      const entries=matrix.slots?.[rel]||[];
+      const sum=entries.reduce((acc,item)=>acc+(item.w||0),0);
+      totals[rel]=sum;
+      if(sum>maxSlot) maxSlot=sum;
+      global+=sum;
+    }
+    const normalized={}; const denom=maxSlot||1;
+    for(const rel of REL_NAMES){ normalized[rel]=Number((totals[rel]/denom).toFixed(4)); }
+    return { perSlot:normalized, total:Number(global.toFixed(4)) };
+  }
+  function formalizeHierarchy(matrices){
+    if(!Array.isArray(matrices)) return { layers:new Map(), stats:[] };
+    const stats=matrices.map(m=>({ token:m.token, centrality:scoreCentrality(m).total }));
+    const values=stats.map(s=>s.centrality).sort((a,b)=>a-b);
+    const quantile=(q)=>{ if(!values.length) return 0; const idx=Math.min(values.length-1, Math.floor(q*(values.length-1))); return values[idx]; };
+    const thresholds={ core:quantile(0.8), inner:quantile(0.5), outer:quantile(0.2) };
+    const layers=new Map();
+    for(const {token,centrality} of stats){
+      let layer=3;
+      if(centrality>=thresholds.core) layer=0;
+      else if(centrality>=thresholds.inner) layer=1;
+      else if(centrality>=thresholds.outer) layer=2;
+      layers.set(token,layer);
+    }
+    return { layers, stats, thresholds };
+  }
+  function selectNeighbors(matrix, fanout){
+    const neighbors=new Map();
+    for(const rel of REL_NAMES){
+      const entries=(matrix.slots?.[rel]||[]).slice().sort((a,b)=>b.w-a.w).slice(0,fanout);
+      neighbors.set(rel, entries.map(item=>({ ...item })));
+    }
+    return neighbors;
+  }
+  function crossLevelExpand(inputMats, outputMats, depth=2, fanout=5){
+    const matrices=new Map();
+    for(const m of [...inputMats,...outputMats]) matrices.set(m.token,m);
+    const graph=new Map();
+    const queue=[];
+    for(const token of matrices.keys()) queue.push({token,depth:0});
+    const visited=new Set();
+    while(queue.length){
+      const {token,depth:d}=queue.shift();
+      if(visited.has(token)||d>depth) continue;
+      visited.add(token);
+      const matrix=matrices.get(token);
+      if(!matrix) continue;
+      const neighbors=selectNeighbors(matrix,fanout);
+      graph.set(token,{token,neighbors,depth:d});
+      if(d===depth) continue;
+      for(const entries of neighbors.values()){
+        for(const entry of entries){
+          if(!visited.has(entry.token)) queue.push({token:entry.token, depth:d+1});
+        }
+      }
+    }
+    return { graph, visited:Array.from(visited) };
+  }
+  function dynamicReorg(graphState){
+    const { graph } = graphState;
+    const reorganized=new Map();
+    const now=Date.now();
+    for(const [token,node] of graph.entries()){
+      const edges=[];
+      for(const [rel,entries] of node.neighbors.entries()){
+        for(const entry of entries){
+          const base=entry.lastSeen?now-entry.lastSeen:1;
+          const recency=1/(1+Math.log10(1+base));
+          const score=Number((entry.w*recency).toFixed(4));
+          edges.push({ token:entry.token, rel, score });
+        }
+      }
+      edges.sort((a,b)=>b.score-a.score);
+      reorganized.set(token,{token,edges});
+    }
+    return { ...graphState, reorganized };
+  }
+  function attentionEmbed(graphState){
+    const { reorganized } = graphState;
+    const embeddings=new Map();
+    for(const [token,node] of reorganized.entries()){
+      let total=0;
+      for(const edge of node.edges) total+=edge.score;
+      const value=total===0?0:Math.tanh(total);
+      embeddings.set(token,Number(value.toFixed(4)));
+    }
+    return { ...graphState, embeddings };
+  }
+  function propagateNonLocal(graphState){
+    const { reorganized, embeddings } = graphState;
+    const propagated=new Map();
+    for(const [token,node] of reorganized.entries()){
+      const neighbors=node.edges;
+      if(!neighbors.length){
+        propagated.set(token, embeddings.get(token)||0);
+        continue;
+      }
+      let sum=0;
+      for(const edge of neighbors){
+        sum+=(embeddings.get(edge.token)||0)*edge.score;
+      }
+      const value=sum/neighbors.length;
+      propagated.set(token, Number(value.toFixed(4)));
+    }
+    return { ...graphState, propagated };
+  }
+  function synthesizeEmergentThoughts(stepLogs){
+    if(!Array.isArray(stepLogs)||!stepLogs.length) return "- No new signals.";
+    const bullets=[];
+    for(const step of stepLogs){
+      if(!step.ok) continue;
+      const duration=Math.max(0, Math.round(step.t1-step.t0));
+      const note=step.note?` — ${step.note}`:"";
+      bullets.push(`- ${step.name} completed in ${duration}ms${note}`);
+    }
+    return bullets.length?bullets.join("\n"):"- Signals inconclusive.";
+  }
+  function reflectRewrite(original, emergentBullets){
+    const draftId=simpleHash(original+"|"+emergentBullets);
+    return {
+      draftId,
+      payload:`Original answer:\n${original}\n\nSignals (emergent thoughts):\n${emergentBullets}\n\nRewrite the answer to be clearer, better-structured, and more complete. Keep it self-contained. Avoid revealing the internal analysis. Return plain text.`
+    };
+  }
+
+  // --- LLM adapter ---
+  let OPENAI_KEY = null;
+  let MODEL = "gpt-4o-mini";
+  let DEPTH = 2;
+  let FANOUT = 5;
+
+  async function streamChat(messages, onDelta) {
+    if(!OPENAI_KEY) throw new Error("API key required");
+    const res = await fetch("https://api.openai.com/v1/chat/completions",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":"Bearer "+OPENAI_KEY},
+      body:JSON.stringify({ model:MODEL, messages, stream:true })
+    });
+    if(!res.ok) throw new Error(`OpenAI error: ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while(true){
+      const {value,done} = await reader.read();
+      if(done) break;
+      buffer += decoder.decode(value,{stream:true});
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop();
+      for(const part of parts){
+        if(!part.startsWith("data:")) continue;
+        const data = part.slice(5).trim();
+        if(!data || data === "[DONE]") continue;
+        try{
+          const parsed = JSON.parse(data);
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if(delta) onDelta(delta);
+        }catch{ /* ignore */ }
+      }
+    }
+  }
+
+  async function getAdjMatrix(token) {
+    const cached = await DB.get(token);
+    if(cached && validateAdj(cached)) return { matrix:cached, source:"cache" };
+    if(!OPENAI_KEY) throw new Error("API key required");
+    const sys = "You produce adjacency matrices for tokens as strict JSON per the provided schema. Tokens are words/phrases (not BPE). Weight scale: 0..1 floats. All 50 relationship slots must be present (empty arrays allowed). No extra keys.";
+    const user = `token="${token}". Return schema-conforming JSON only.`;
+    const res = await fetch("https://api.openai.com/v1/chat/completions",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":"Bearer "+OPENAI_KEY},
+      body:JSON.stringify({
+        model:MODEL,
+        messages:[{role:"system",content:sys},{role:"user",content:user}],
+        response_format:{ type:"json_object" }
+      })
+    });
+    if(!res.ok) throw new Error(`OpenAI error: ${res.status}`);
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content ?? "{}";
+    const matrix = JSON.parse(text);
+    if(!matrix.meta){
+      matrix.meta={ language:"en", downloaded_at:new Date().toISOString(), source:"LLM" };
+    } else if(!matrix.meta.downloaded_at){
+      matrix.meta.downloaded_at=new Date().toISOString();
+    }
+    if(!validateAdj(matrix)) throw new Error("Schema mismatch");
+    await DB.set(token, matrix);
+    return { matrix, source:"download" };
+  }
+
+  // --- Terminal helpers ---
+  const term = document.getElementById("term");
+  const inputEl = document.getElementById("in");
+  const dirView = document.getElementById("dirView");
+  const dirList = document.getElementById("dirList");
+
+  function print(txt, cls=""){
+    const d=document.createElement("div");
+    d.className=`line ${cls}`;
+    d.textContent=txt;
+    term.appendChild(d);
+    term.scrollTop=term.scrollHeight;
+    return d;
+  }
+
+  function printCollapsible(title, getContent){
+    const line = print(`▸ ${title}`,"collapsible");
+    let open=false;
+    let child=null;
+    line.addEventListener("click", async () => {
+      open=!open;
+      if(open){
+        line.textContent=`▾ ${title}`;
+        child=print("","indent");
+        try {
+          const content = await getContent();
+          if(typeof content === "string") child.textContent=content;
+          else child.replaceWith(content);
+        } catch (err) {
+          child.textContent=`Error: ${err.message}`;
+        }
+      } else {
+        line.textContent=`▸ ${title}`;
+        child?.remove();
+      }
+    });
+    return line;
+  }
+
+  function renderMatrixJSON(matrix){
+    const pre=document.createElement("div");
+    const lines=[];
+    lines.push(`token: ${matrix.token} (model ${matrix.model})`);
+    for(const rel of REL_NAMES){
+      const entries = matrix.slots[rel];
+      if(!entries.length) continue;
+      lines.push(`  ${rel}:`);
+      for(const item of entries){
+        lines.push(`    - ${item.token} (${item.w.toFixed(3)})`);
+      }
+    }
+    pre.textContent = lines.join("\n") || "(empty)";
+    return pre;
+  }
+
+  const shownTokens = new Set();
+
+  async function showToken(token, { force = false } = {}){
+    try {
+      if(!force && shownTokens.has(token)) return;
+      const { matrix, source } = await getAdjMatrix(token);
+      shownTokens.add(matrix.token);
+      const title = `token: "${matrix.token}" [model ${matrix.model}] (${source})`;
+      printCollapsible(title, async () => {
+        const container = document.createElement("div");
+        container.className="indent";
+        const meta = document.createElement("div");
+        meta.textContent = `downloaded_at: ${matrix.meta.downloaded_at}`;
+        container.appendChild(meta);
+        for(const rel of REL_NAMES){
+          const entries = matrix.slots[rel];
+          if(!entries.length) continue;
+          const relDiv = document.createElement("div");
+          relDiv.textContent = `${rel}:`;
+          container.appendChild(relDiv);
+          for(const item of entries){
+            const row = document.createElement("div");
+            const link = document.createElement("span");
+            link.className="token-link";
+            link.textContent=item.token;
+            link.onclick = () => showToken(item.token);
+            row.appendChild(document.createTextNode("  - "));
+            row.appendChild(link);
+            row.appendChild(document.createTextNode(` (${item.w.toFixed(3)})`));
+            container.appendChild(row);
+          }
+        }
+        if(container.children.length===1){
+          const none = document.createElement("div");
+          none.textContent="(no neighbors)";
+          container.appendChild(none);
+        }
+        return container;
+      });
+    } catch (err) {
+      print(`Failed to open token ${token}: ${err.message}`,"fail");
+    }
+  }
+
+  async function refreshDirectory(){
+    dirList.textContent="Loading...";
+    try {
+      const keys = await DB.keys();
+      if(!keys.length){
+        dirList.textContent="No matrices cached.";
+        return;
+      }
+      dirList.textContent="";
+      keys.sort().forEach((key) => {
+        const item = document.createElement("div");
+        const link = document.createElement("span");
+        link.textContent=key;
+        link.className="token-link";
+        link.onclick=() => showToken(key);
+        const btn = document.createElement("button");
+        btn.textContent="Download";
+        btn.onclick=async () => {
+          const matrix = await DB.get(key);
+          const blob = new Blob([JSON.stringify(matrix,null,2)], { type:"application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href=url;
+          a.download=`${key}.json`;
+          a.click();
+          setTimeout(()=>URL.revokeObjectURL(url),5000);
+        };
+        item.appendChild(link);
+        item.appendChild(document.createTextNode(" "));
+        item.appendChild(btn);
+        dirList.appendChild(item);
+      });
+    } catch (err) {
+      dirList.textContent=`Failed: ${err.message}`;
+    }
+  }
+
+  document.getElementById("openDir").onclick = () => {
+    refreshDirectory();
+    dirView.style.display="block";
+  };
+  document.getElementById("dirClose").onclick = () => {
+    dirView.style.display="none";
+  };
+
+  function help(){
+    print([
+      "Commands:",
+      "  key sk-XXXX   -> set OpenAI key (browser memory only)",
+      "  model NAME    -> set model (default gpt-4o-mini)",
+      "  depth N       -> set recursion depth (default 2)",
+      "  fanout K      -> set per-slot fanout (default 5)",
+      "  ls matrices   -> list cached tokens",
+      "  open TOKEN    -> open token’s matrix",
+      "  export        -> download all matrices as JSON",
+      "  help          -> show this help",
+      "Any other input is sent as a prompt."
+    ].join("\n"));
+  }
+
+  async function exportAll(){
+    const keys = await DB.keys();
+    const bundle = {};
+    for(const key of keys){
+      const val = await DB.get(key);
+      if(val) bundle[key]=val;
+    }
+    const blob = new Blob([JSON.stringify(bundle,null,2)], { type:"application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url;
+    a.download="matrices-export.json";
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),5000);
+    print(`Exported ${keys.length} matrices.`);
+  }
+
+  function createStepLine(title, logs){
+    const el = print(`${title}`);
+    const spinner = createSpinner(el);
+    const start = performance.now();
+    return {
+      finish(ok, note){
+        const end = performance.now();
+        const elapsed = Math.round(end-start);
+        spinner.stop(ok?"✔":"✖");
+        el.textContent = `${ok?"✔":"✖"} ${title} (${elapsed}ms)${note?` - ${note}`:""}`;
+        if(!ok) el.classList.add("fail"); else el.classList.add("ok");
+        if(Array.isArray(logs)){
+          logs.push({ name:title, t0:start, t1:end, ok, note });
+        }
+      }
+    };
+  }
+
+  async function runPrompt(text){
+    if(!OPENAI_KEY){
+      print("⚠ Enter your OpenAI API key using 'key sk-...'.", "fail");
+      return;
+    }
+    const runLog={ id: simpleHash(Date.now().toString()), inputPrompt:text, originalLLM:"", refined:"", emergentThoughts:"", steps:[], tokensIn:[], tokensOut:[] };
+    const tokensIn = tokenizeWords(text);
+    runLog.tokensIn = tokensIn;
+    let step = createStepLine("Tokenizing prompt input...", runLog.steps);
+    step.finish(true, `${tokensIn.length} tokens`);
+
+    const inputMatrices=[];
+    step = createStepLine("Downloading LLM input token weights and adjacencies...", runLog.steps);
+    try{
+      for(const token of tokensIn){
+        const { matrix, source } = await getAdjMatrix(token);
+        inputMatrices.push(matrix);
+        print(`  ${token} (${source})`);
+        showToken(token);
+      }
+      step.finish(true, `${inputMatrices.length} matrices ready`);
+    }catch(err){ step.finish(false, err.message); return; }
+
+    const originalChunks=[];
+    step = createStepLine("Loading LLM response to prompt...", runLog.steps);
+    const originalLine = print("");
+    try{
+      await streamChat([{role:"system",content:"You are an LLM assistant that provides concise, accurate answers. When helpful, you may use technical detail. Avoid chain-of-thought exposition."},{role:"user",content:text}], (delta)=>{
+        originalChunks.push(delta);
+        originalLine.textContent += delta;
+      });
+      step.finish(true, `${originalChunks.join("").length} chars`);
+    }catch(err){ step.finish(false, err.message); return; }
+    runLog.originalLLM = originalChunks.join("");
+    printCollapsible("Original LLM output", async ()=>runLog.originalLLM || "(empty)");
+    originalLine.textContent = "Original response captured (expand below)";
+
+    const tokensOut = tokenizeWords(runLog.originalLLM);
+    runLog.tokensOut = tokensOut;
+    step = createStepLine("Tokenizing LLM response output...", runLog.steps);
+    step.finish(true, `${tokensOut.length} tokens`);
+
+    const outputMatrices=[];
+    step = createStepLine("Downloading LLM output token weights and adjacencies...", runLog.steps);
+    try{
+      for(const token of tokensOut){
+        const { matrix, source } = await getAdjMatrix(token);
+        outputMatrices.push(matrix);
+        print(`  ${token} (${source})`);
+        showToken(token);
+      }
+      step.finish(true, `${outputMatrices.length} matrices ready`);
+    }catch(err){ step.finish(false, err.message); return; }
+
+    createStepLine("Loading input tokens into HLSF matrices...", runLog.steps).finish(true, `${inputMatrices.length}`);
+    createStepLine("Loading output tokens into HLSF matrices...", runLog.steps).finish(true, `${outputMatrices.length}`);
+
+    const combined=[...inputMatrices,...outputMatrices];
+    const hierarchy = formalizeHierarchy(combined);
+    createStepLine("Formalizing hierarchical adjacencies...", runLog.steps).finish(true, `${hierarchy.layers.size} tokens mapped`);
+    const cross = crossLevelExpand(inputMatrices, outputMatrices, DEPTH, FANOUT);
+    createStepLine("Initiating cross-level recursive expansions...", runLog.steps).finish(true, `${cross.visited.length} visited`);
+    const dynamic = dynamicReorg(cross);
+    const edgeCount = Array.from(dynamic.reorganized.values()).reduce((acc,node)=>acc+node.edges.length,0);
+    createStepLine("Dynamically reorganizing knowledge at multiple abstraction layers...", runLog.steps).finish(true, `${edgeCount} edges ranked`);
+    const attention = attentionEmbed(dynamic);
+    const mean = Array.from(attention.embeddings.values()).reduce((acc,val)=>acc+val,0)/(attention.embeddings.size||1);
+    createStepLine("Deploying attention-driven embedding algorithms...", runLog.steps).finish(true, `mean ${mean.toFixed(3)}`);
+    createStepLine("Facilitating efficient hierarchical knowledge synthesis...", runLog.steps).finish(true, `layers=${hierarchy.layers.size}`);
+    const propagated = propagateNonLocal(attention);
+    const avg = Array.from(propagated.propagated.values()).reduce((acc,val)=>acc+val,0)/(propagated.propagated.size||1);
+    createStepLine("Propagating non-local information...", runLog.steps).finish(true, `avg ${avg.toFixed(3)}`);
+
+    runLog.emergentThoughts = synthesizeEmergentThoughts(runLog.steps);
+    printCollapsible("Emergent thoughts", async ()=>runLog.emergentThoughts || "(none)");
+
+    const reflect = reflectRewrite(runLog.originalLLM, runLog.emergentThoughts);
+    const refinedChunks=[];
+    step = createStepLine("Developing revised response output...", runLog.steps);
+    const refinedLine = print("");
+    try{
+      await streamChat([
+        {role:"system",content:"You refine earlier answers using structured signals. You are brief, correct, and well-organized."},
+        {role:"user",content:reflect.payload}
+      ], (delta)=>{
+        refinedChunks.push(delta);
+        refinedLine.textContent += delta;
+      });
+      step.finish(true, `${refinedChunks.join("").length} chars`);
+    }catch(err){ step.finish(false, err.message); return; }
+    runLog.refined = refinedChunks.join("");
+    refinedLine.textContent = "";
+    print("Refined response:");
+    print(runLog.refined,"ok");
+  }
+
+  inputEl.addEventListener("keydown", async (e)=>{
+    if(e.key!=="Enter") return;
+    const line = inputEl.value.trim();
+    inputEl.value="";
+    if(!line) return;
+    if(line.startsWith("key ")){
+      OPENAI_KEY=line.slice(4).trim();
+      print("API key set for this tab (lost on refresh).");
+      return;
+    }
+    if(line.startsWith("model ")){
+      MODEL=line.slice(6).trim();
+      print(`Model set to ${MODEL}.`);
+      return;
+    }
+    if(line.startsWith("depth ")){
+      const value=parseInt(line.slice(6).trim(),10);
+      if(Number.isFinite(value)&&value>0){ DEPTH=value; print(`Depth set to ${DEPTH}.`);} else { print("Depth must be positive.","fail"); }
+      return;
+    }
+    if(line.startsWith("fanout ")){
+      const value=parseInt(line.slice(7).trim(),10);
+      if(Number.isFinite(value)&&value>0){ FANOUT=value; print(`Fanout set to ${FANOUT}.`);} else { print("Fanout must be positive.","fail"); }
+      return;
+    }
+    if(line==="help") { help(); return; }
+    if(line==="ls matrices"){ const keys = await DB.keys(); print(keys.join(", ")||"(none)"); return; }
+    if(line.startsWith("open ")) { await showToken(line.slice(5).trim(), { force:true }); return; }
+    if(line==="export") { await exportAll(); return; }
+    await runPrompt(line);
+  });
+
+  print("⚠ Never share your OpenAI API key with untrusted pages. The key is stored only in memory and will be lost on refresh.");
+  help();
+  inputEl.focus();
+  </script>
+</body>
+</html>
