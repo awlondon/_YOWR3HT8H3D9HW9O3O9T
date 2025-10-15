@@ -1,1172 +1,1042 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <title>HLSF Lite</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HLSF Cognition Engine v2.0</title>
   <style>
-    body { margin:0; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:#0c0c0c; color:#ddd; }
-    #topbar { display:flex; align-items:center; justify-content:space-between; padding:8px 12px; border-bottom:1px solid #222; background:#101010; }
-    #term { padding:12px; height: calc(100vh - 104px); overflow:auto; }
-    #promptBar { position:fixed; bottom:0; left:0; right:0; background:#111; border-top:1px solid #222; padding:8px 12px; }
-    #in { width:100%; background:#000; color:#0f0; border:0; outline:none; padding:8px; font:inherit; }
-    .line { white-space:pre-wrap; margin:4px 0; }
-    .collapsible { cursor:pointer; color:#9cf; }
-    .indent { margin-left:16px; white-space:pre-wrap; }
-    .ok { color:#6f6; }
-    .fail { color:#f66; }
-    .spinner { display:inline-block; width:1em; color:#9cf; }
-    a { color:#9cf; }
-    button { background:#1a1a1a; color:#ddd; border:1px solid #333; padding:4px 8px; cursor:pointer; }
-    button:hover { background:#222; }
-    #dirView { display:none; position:fixed; top:10%; left:10%; right:10%; bottom:10%; background:#050505; border:1px solid #333; padding:16px; overflow:auto; box-shadow:0 0 12px rgba(0,0,0,0.6); }
-    #dirView h2 { margin-top:0; }
-    #dirClose { float:right; }
-    .token-link { color:#9f9; cursor:pointer; }
+    :root {
+      color-scheme: dark;
+      --bg: #0a0a0a;
+      --panel: #111;
+      --text: #e0e0e0;
+      --accent: #00ff88;
+      --error: #ff4444;
+      --success: #44ff44;
+      --warning: #ffd54f;
+      --scrollbar: #1f1f1f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: 'Fira Code', Consolas, Monaco, 'Courier New', monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #app {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 1.5rem;
+      width: 100%;
+    }
+
+    #header {
+      font-size: 1.3rem;
+      font-weight: bold;
+      margin-bottom: 1rem;
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .header-stats {
+      display: flex;
+      gap: 1.5rem;
+      font-size: 0.9rem;
+      font-weight: normal;
+    }
+
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .stat-label {
+      font-size: 0.75rem;
+      opacity: 0.6;
+    }
+
+    .stat-value {
+      font-weight: bold;
+      color: var(--accent);
+    }
+
+    #log {
+      flex: 1;
+      background: var(--panel);
+      border: 1px solid #222;
+      border-radius: 12px;
+      padding: 1rem;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      box-shadow: 0 0 20px rgba(0, 255, 136, 0.1);
+      min-height: 400px;
+    }
+
+    #log::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    #log::-webkit-scrollbar-thumb {
+      background: var(--scrollbar);
+      border-radius: 10px;
+    }
+
+    #input-area {
+      margin-top: 1rem;
+      display: flex;
+      gap: 0.75rem;
+    }
+
+    #command-input {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      background: var(--panel);
+      border: 1px solid #222;
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1rem;
+      transition: border 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    }
+
+    #command-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(0, 255, 136, 0.2);
+    }
+
+    .button-group {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .btn {
+      padding: 0.75rem 1.5rem;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: bold;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #022d15;
+    }
+
+    .btn-secondary {
+      background: #333;
+      color: var(--text);
+    }
+
+    .btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 25px rgba(0, 255, 136, 0.25);
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      box-shadow: none;
+      transform: none;
+    }
+
+    .log-entry {
+      border-left: 3px solid var(--accent);
+      padding-left: 1rem;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .log-entry .timestamp {
+      font-size: 0.75rem;
+      opacity: 0.6;
+    }
+
+    .log-entry.status { font-style: italic; }
+    .log-entry.error { border-left-color: var(--error); color: var(--error); }
+    .log-entry.success { border-left-color: var(--success); color: var(--success); }
+    .log-entry.warning { border-left-color: var(--warning); color: var(--warning); }
+
+    .cost-estimate {
+      background: rgba(255, 213, 79, 0.1);
+      border: 1px solid var(--warning);
+      border-radius: 8px;
+      padding: 0.75rem;
+      margin: 0.5rem 0;
+    }
+
+    .cost-estimate-title {
+      font-weight: bold;
+      color: var(--warning);
+      margin-bottom: 0.5rem;
+    }
+
+    details {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid #222;
+      border-radius: 8px;
+      padding: 0.5rem 0.75rem;
+      transition: border 0.2s ease;
+    }
+
+    details[open] {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(0, 255, 136, 0.25);
+    }
+
+    summary {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      list-style: none;
+      font-weight: 600;
+    }
+
+    summary::-webkit-details-marker { display: none; }
+
+    .status-badge {
+      font-size: 0.75rem;
+      padding: 0.1rem 0.35rem;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+    }
+
+    .attention-badge {
+      font-weight: bold;
+      padding: 0.15rem 0.45rem;
+      border-radius: 999px;
+      color: #011;
+    }
+
+    .attention-high { background: #00ff88; }
+    .attention-medium { background: #ffd54f; }
+    .attention-low { background: #ff7777; }
+    .attention-hub { background: #4aa3ff; color: #021226; }
+    .attention-bridge { background: #bf7fff; color: #220031; }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      backdrop-filter: blur(8px);
+      background: rgba(0, 0, 0, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+    }
+
+    .modal.hidden { display: none; }
+
+    .modal-content {
+      background: #111;
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      padding: 2rem;
+      width: min(420px, 90vw);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+    }
+
+    .modal-content h2 {
+      margin: 0;
+      color: var(--accent);
+    }
+
+    .modal-content input {
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      border: 1px solid #222;
+      background: #0c0c0c;
+      color: var(--text);
+      font-size: 1rem;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+    }
+
+    .pill-button {
+      border-radius: 999px;
+      border: none;
+      padding: 0.5rem 1.4rem;
+      font-weight: bold;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .pill-button.primary { background: var(--accent); color: #022d15; }
+    .pill-button.secondary { background: transparent; border: 1px solid #333; color: var(--text); }
+
+    .pill-button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .pill-button:not(:disabled):hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 25px rgba(0, 255, 136, 0.18);
+    }
+
+    .processing-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(0, 255, 136, 0.15);
+      border-top-color: var(--accent);
+      animation: spin 0.8s linear infinite;
+    }
+
+    .final-output {
+      border-left: 3px solid var(--success);
+      padding-left: 1rem;
+      background: rgba(68, 255, 68, 0.05);
+    }
+
+    .final-output h3 {
+      margin-top: 0;
+      color: var(--success);
+    }
+
+    .final-output pre {
+      background: rgba(0, 0, 0, 0.35);
+      padding: 0.75rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .json-key { color: #64b5f6; }
+    .json-string { color: #f48fb1; }
+    .json-number { color: #ffb74d; }
+    .json-boolean { color: #81c784; }
+
+    @media (max-width: 720px) {
+      #app { padding: 1rem; }
+      #header { flex-direction: column; align-items: flex-start; }
+      .header-stats { flex-direction: column; gap: 0.5rem; }
+      #input-area { flex-direction: column; }
+      .button-group { flex-direction: column; }
+      .btn { width: 100%; }
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
-  <div id="topbar">
-    <div>HLSF Lite Browser Terminal</div>
-    <div>
-      <button id="openDir">Open matrices directory</button>
+  <div id="api-modal" class="modal">
+    <div class="modal-content" role="dialog" aria-modal="true">
+      <h2>Enter OpenAI API Key</h2>
+      <p>Provide your OpenAI API key (sk-...) to begin using the HLSF Cognition Engine.</p>
+      <input id="api-key-input" type="password" placeholder="sk-..." aria-label="OpenAI API key" />
+      <div class="modal-actions">
+        <button id="api-cancel" class="pill-button secondary">Continue offline</button>
+        <button id="api-confirm" class="pill-button primary">Save key</button>
+      </div>
+      <small style="opacity:0.65">⚠️ Warning: Key stored in browser memory only. For production use, consider a backend proxy.</small>
     </div>
   </div>
-  <div id="term"></div>
-  <div id="promptBar"><input id="in" placeholder="Enter prompt or command…" autocomplete="off"/></div>
-  <div id="dirView">
-    <button id="dirClose">Close</button>
-    <h2>Cached Matrices</h2>
-    <div id="dirList"></div>
+
+  <div id="app" aria-live="polite">
+    <div id="header">
+      <div>HLSF Cognition Engine v2.0</div>
+      <div class="header-stats">
+        <div class="stat-item">
+          <span class="stat-label">Cache Hit Rate</span>
+          <span class="stat-value" id="cache-hit-rate">—</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Cached Tokens</span>
+          <span class="stat-value" id="cached-tokens">—</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Session Cost</span>
+          <span class="stat-value" id="session-cost">$0.00</span>
+        </div>
+      </div>
+    </div>
+    <div id="log" aria-label="Command log"></div>
+    <div id="input-area">
+      <input id="command-input" type="text" placeholder="> Enter a prompt or /command" maxlength="600" autocomplete="off" aria-label="Command input" />
+      <div class="button-group">
+        <button id="cancel-btn" class="btn btn-secondary" style="display: none;">Cancel</button>
+        <button id="send-btn" class="btn btn-primary">Send</button>
+      </div>
+    </div>
   </div>
-  <script type="module">
-  // --- tiny IndexedDB helper (key -> JSON) ---
-  const DB = (() => {
-    const DB_NAME = "hlsf-lite";
-    const STORE = "matrices";
-    function open() {
-      return new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 1);
-        req.onupgradeneeded = () => {
-          req.result.createObjectStore(STORE);
-        };
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-    }
-    async function get(key) {
-      const db = await open();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readonly");
-        const req = tx.objectStore(STORE).get(key);
-        req.onsuccess = () => resolve(req.result ?? null);
-        req.onerror = () => reject(req.error);
-      });
-    }
-    async function set(key, value) {
-      const db = await open();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).put(value, key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    }
-    async function del(key) {
-      const db = await open();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).delete(key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    }
-    async function keys() {
-      const db = await open();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, "readonly");
-        const req = tx.objectStore(STORE).getAllKeys();
-        req.onsuccess = () => resolve(req.result || []);
-        req.onerror = () => reject(req.error);
-      });
-    }
-    return { get, set, keys, del };
-  })();
 
-  // --- Spinner helper ---
-  function createSpinner(element) {
-    const frames = ["◐", "◓", "◑", "◒"];
-    let frame = 0;
-    let active = true;
-    const span = document.createElement("span");
-    span.className = "spinner";
-    element.prepend(span);
-    const timer = setInterval(() => {
-      if (!active) return;
-      span.textContent = frames[frame];
-      frame = (frame + 1) % frames.length;
-    }, 120);
-    return {
-      stop(finalText) {
-        active = false;
-        clearInterval(timer);
-        span.textContent = finalText || "";
+  <script>
+    // ============================================
+    // CONSTANTS & CONFIGURATION
+    // ============================================
+    const CONFIG = {
+      MAX_TOKENS_PER_PROMPT: 100,
+      MAX_CONCURRENCY: 5,
+      MAX_RETRY_ATTEMPTS: 3,
+      RETRY_BASE_DELAY_MS: 500,
+      DEFAULT_MODEL: 'gpt-4o-mini', // Cheaper model
+      MAX_SESSION_HISTORY: 50,
+      ESTIMATED_COST_PER_API_CALL: 0.02, // $0.02 per call (conservative estimate)
+    };
+
+    const RELATIONSHIP_PRIORITIES = new Map([
+      ['≡', 1.0], ['⊃', 1.0], ['⊂', 0.8], ['≈', 0.7], ['∈', 0.9], ['∋', 0.9],
+      ['⊤', 0.9], ['⊥', 0.9], ['⊏', 0.8], ['⊐', 0.8], ['↔', 0.7], ['⇌', 0.7],
+      ['∥', 0.6], ['∼', 0.5], ['→', 0.5], ['⇒', 0.5], ['⇐', 0.5], ['↠', 0.5],
+      ['↗', 0.4], ['↘', 0.4], ['⇝', 1.0], ['⇂', 0.7], ['≠', 0.8], ['⊕', 0.8],
+      ['⊛', 0.7], ['∝', 0.7], ['⇝ Causes', 1.0], ['⇐ Caused By', 0.9],
+      ['∗', 0.7], ['≜', 0.9], ['⋆', 0.8], ['7→', 0.7], ['⊢', 0.9], ['⊣', 0.9],
+      ['↷', 0.8], ['↶', 0.8], ['◦', 0.9], ['|=', 0.9], ['◁', 0.6], ['⇄', 0.6],
+      ['⊗', 0.9], ['÷', 0.7], ['⊘', 0.8], ['×', 0.8], ['¬', 0.8], ['†', 0.8],
+      ['⊠', 0.8], ['/∈', 0.8], ['⊬', 0.8], ['⊩', 0.9], ['⊨', 0.9], ['?', 0.5],
+      ['⚡', 0.7], ['⇒ Attention', 0.7], ['↶ Self-Reference', 0.7], ['∧', 0.6],
+      ['↭', 0.6], ['▷◁', 0.6]
+    ]);
+
+    // ============================================
+    // STATE MANAGEMENT
+    // ============================================
+    const state = {
+      apiKey: '',
+      isProcessing: false,
+      sessionStats: {
+        totalApiCalls: 0,
+        totalCacheHits: 0,
+        totalCostCents: 0,
       }
     };
-  }
+    
+    // AbortController stored separately to avoid cloning issues
+    let currentAbortController = null;
 
-  // --- relationships + schema ---
-  const REL_NAMES = [
-    "Identity","Contains","Is Contained By","Variant","Is Instance Of","Has Instance",
-    "Is Type Of","Has Type","Part Of","Composes","Mirrors","Inverts","Parallel To",
-    "Adjacent To","Next","Sequence Of","Preceded By","Follows","Spatially Above",
-    "Spatially Below","Symbolically Supports","Symbolically Depends","Contrasts",
-    "Complements","Associated With","Correlates With","Causes","Caused By","Evokes",
-    "Represents","Symbolizes","Refers To","Defines","Is Defined By","Transforms To",
-    "Transformed From","Functions As","Interpreted As","Used With","Co-occurs With",
-    "Synthesizes","Divides Into","Opposes","Generalizes","Specializes","Analogous To",
-    "Prerequisite Of","Result Of","Context For","Exception Of"
-  ];
-
-  const STOP_TOKENS = new Set([
-    "i","you","he","she","it","we","they","a","an","the","to","of","in","on","at",
-    "is","am","are","be","was","were","do","did","does","not","what","up"
-  ]);
-
-  const CANON_MAP = new Map([
-    ["what's","what"],
-    ["i'm","i"],
-    ["you're","you"],
-    ["it's","it"],
-    ["don't","do not"],
-    ["can't","cannot"]
-  ]);
-
-  function canonToken(t){
-    let value = (t ?? "").toLowerCase().trim();
-    if(!value) return "";
-    if(CANON_MAP.has(value)) value = CANON_MAP.get(value);
-    if(value === "i") return "{speaker}";
-    if(value === "you") return "{addressee}";
-    return value;
-  }
-
-  const ADJ_BASE = `
-Return ONLY one JSON object, EXACT keys, all 50 slots present (empty arrays allowed).
-Populate at least 12 neighbors total across ≥6 of these slots:
-"Co-occurs With","Associated With","Sequence Of","Defines","Represents","Symbolizes","Refers To".
-Each item: {"token":"<word/phrase>","w":<float 0..1>} (descending by w). No extras, no commentary.`;
-
-  const ADJ_FORCED = `
-Same schema and rules, but if uncertain you MUST still populate ≥24 neighbors total across ≥8 slots
-using broadly relevant, safe, generic associations. No empty result is allowed.`;
-
-  const CONTEXT_HINT_SYS = "Return a single short sentence giving the domain/sense of the given word/phrase, followed by 6 comma-separated key facets. No markdown.";
-
-  const MIN_NEIGHBORS_BASE = 12;
-  const MIN_NEIGHBORS_FORCED = 24;
-
-  const PASS1_STATUS = "Empty matrix → retry with context";
-  const PASS2_STATUS = "Still sparse → forced population";
-  const PASS3_STATUS = "LLM still empty → bootstrap seeding applied";
-
-  const FEWSHOT = {
-    token: "photosynthesis",
-    model: "ignored",
-    version: 1,
-    slots: Object.fromEntries(REL_NAMES.map(name => [name, []]))
-  };
-
-  FEWSHOT.slots["Co-occurs With"] = [
-    { token: "chlorophyll", w: 0.96 },
-    { token: "light energy", w: 0.91 },
-    { token: "carbon dioxide", w: 0.88 }
-  ];
-  FEWSHOT.slots["Defines"] = [
-    { token: "conversion of light to chemical energy", w: 0.93 },
-    { token: "glucose production", w: 0.84 },
-    { token: "oxygen release", w: 0.82 }
-  ];
-
-  const FEWSHOT_STRING = JSON.stringify(FEWSHOT);
-
-  const SLOTS_CANON_MAP = (() => {
-    const m = {};
-    for (const k of REL_NAMES) {
-      m[k.toLowerCase()] = k;
-      m[k.replace(/\s+/g, "").toLowerCase()] = k;
-    }
-    return m;
-  })();
-
-  const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
-
-  function safeExtractJSON(s){
-    try { return JSON.parse(s); } catch(_){ }
-    const i = s.indexOf("{");
-    const j = s.lastIndexOf("}");
-    if(i>=0 && j>i){
-      try { return JSON.parse(s.slice(i,j+1)); } catch(_){ }
-    }
-    return null;
-  }
-
-  function sanitizeAdjMatrix(raw,{token,model}){
-    const canonical = canonToken(token);
-    const out = {
-      token: canonical,
-      model: String(model),
-      version: 1,
-      slots: Object.fromEntries(REL_NAMES.map(r=>[r,[]])),
-      meta: {
-        language: "en",
-        downloaded_at: new Date().toISOString(),
-        source: "LLM"
-      }
+    // ============================================
+    // DOM ELEMENTS
+    // ============================================
+    const elements = {
+      log: document.getElementById('log'),
+      input: document.getElementById('command-input'),
+      sendBtn: document.getElementById('send-btn'),
+      cancelBtn: document.getElementById('cancel-btn'),
+      apiModal: document.getElementById('api-modal'),
+      apiKeyInput: document.getElementById('api-key-input'),
+      apiConfirmBtn: document.getElementById('api-confirm'),
+      apiCancelBtn: document.getElementById('api-cancel'),
+      cacheHitRate: document.getElementById('cache-hit-rate'),
+      cachedTokens: document.getElementById('cached-tokens'),
+      sessionCost: document.getElementById('session-cost'),
     };
-    let nonEmpty = 0;
-    const slots = raw?.slots && typeof raw.slots === "object" ? raw.slots : {};
-    for(const [k,v] of Object.entries(slots)){
-      const canon = SLOTS_CANON_MAP[(k||"").replace(/\s+/g,"").toLowerCase()];
-      if(!canon || !Array.isArray(v)) continue;
-      for(const entry of v){
-        const t = String(entry?.token ?? "").toLowerCase().trim();
-        let w = Number(entry?.w);
-        if(!t) continue;
-        if(!Number.isFinite(w)) w = 0;
-        w = clamp(w,0,1);
-        out.slots[canon].push({ token: t, w });
-        if(w>0) nonEmpty++;
+
+    // ============================================
+    // UTILITY FUNCTIONS
+    // ============================================
+    function sanitizeInput(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function tokenize(text) {
+      if (!text) return [];
+      return text.trim()
+        .split(/[^\p{L}\p{N}\-']+/u)
+        .filter(Boolean)
+        .map(t => t.toLowerCase());
+    }
+
+    function countTokens(text) {
+      return tokenize(text).length;
+    }
+
+    function estimateCost(apiCalls) {
+      return apiCalls * CONFIG.ESTIMATED_COST_PER_API_CALL;
+    }
+
+    function formatCurrency(cents) {
+      return `$${(cents / 100).toFixed(2)}`;
+    }
+
+    function highlightJSON(json) {
+      const jsonString = typeof json === 'string' ? json : JSON.stringify(json, null, 2);
+      return jsonString
+        .replace(/(&)/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"(.*?)\"(?=\s*:)/g, '<span class="json-key">"$1"</span>')
+        .replace(/:"(.*?)"/g, ':<span class="json-string">"$1"</span>')
+        .replace(/:(\s*)(-?\d+(?:\.\d+)?)/g, ':$1<span class="json-number">$2</span>')
+        .replace(/:(\s*)(true|false)/gi, ':$1<span class="json-boolean">$2</span>')
+        .replace(/:(\s*)(null)/gi, ':$1<span class="json-boolean">$2</span>');
+    }
+
+    // ============================================
+    // LOGGING FUNCTIONS
+    // ============================================
+    function addLogEntry(content, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      const timestamp = new Date().toLocaleTimeString();
+      entry.innerHTML = `<div class="timestamp">${timestamp}</div>${content}`;
+      elements.log.appendChild(entry);
+      elements.log.scrollTo({ top: elements.log.scrollHeight, behavior: 'smooth' });
+      return entry;
+    }
+
+    function logStatus(message) {
+      return addLogEntry(`<div class="processing-indicator"><span class="spinner"></span>${message}</div>`, 'status');
+    }
+
+    function logError(message) {
+      return addLogEntry(`🔴 ${sanitizeInput(message)}`, 'error');
+    }
+
+    function logSuccess(message) {
+      return addLogEntry(`✅ ${sanitizeInput(message)}`, 'success');
+    }
+
+    function logWarning(message) {
+      return addLogEntry(`⚠️ ${sanitizeInput(message)}`, 'warning');
+    }
+
+    // ============================================
+    // STATS UPDATES
+    // ============================================
+    function updateStats() {
+      const { totalApiCalls, totalCacheHits, totalCostCents } = state.sessionStats;
+      const totalRequests = totalApiCalls + totalCacheHits;
+      const hitRate = totalRequests > 0 
+        ? ((totalCacheHits / totalRequests) * 100).toFixed(1) + '%'
+        : '—';
+      
+      elements.cacheHitRate.textContent = hitRate;
+      elements.cachedTokens.textContent = getCachedTokenCount();
+      elements.sessionCost.textContent = formatCurrency(totalCostCents);
+    }
+
+    function getCachedTokenCount() {
+      const keys = Object.keys(localStorage).filter(k => k.startsWith('hlsf_token_'));
+      return keys.length;
+    }
+
+    // ============================================
+    // CACHE MANAGEMENT
+    // ============================================
+    function getCacheKey(token) {
+      return `hlsf_token_${token.toLowerCase()}`;
+    }
+
+    function getFromCache(token) {
+      try {
+        const raw = localStorage.getItem(getCacheKey(token));
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        state.sessionStats.totalCacheHits++;
+        updateStats();
+        return data;
+      } catch (err) {
+        console.error('Cache read error:', err);
+        return null;
       }
     }
-    return { out, nonEmpty };
-  }
 
-  function validateAdjMatrix(obj){
-    if(!obj || typeof obj!=="object") return "Not an object";
-    if(obj.version!==1) return "version !== 1";
-    if(!obj.token) return "missing token";
-    if(!obj.model) return "missing model";
-    const meta = obj.meta;
-    if(!meta || meta.language!=="en" || (meta.source!=="LLM" && meta.source!=="BOOTSTRAP" && meta.source!=="HEURISTIC")) return "bad meta";
-    if(!obj.meta.downloaded_at) return "missing downloaded_at";
-    if(!obj.slots || typeof obj.slots!=="object") return "missing slots";
-    for(const r of REL_NAMES){
-      if(!Array.isArray(obj.slots[r])) return `missing or non-array slot "${r}"`;
-      for(let i=0;i<obj.slots[r].length;i++){
-        const it = obj.slots[r][i];
-        if(!it || typeof it.token!=="string") return `slots["${r}"][${i}].token invalid`;
-        if(typeof it.w!=="number" || it.w<0 || it.w>1) return `slots["${r}"][${i}].w out of range`;
-      }
-    }
-    return null;
-  }
-
-  function looksBogusModel(name){
-    return /default|model_name|language_model|gpt-3\.5|text-davinci/i.test(name||"");
-  }
-
-  function isJunkMatrix(mat){
-    if(!mat || typeof mat!=="object") return true;
-    const badModel = looksBogusModel(mat.model);
-    const downloaded = Date.parse(mat.meta?.downloaded_at||0);
-    const tooOld = Number.isFinite(downloaded) ? downloaded < Date.parse("2024-06-01") : true;
-    const empty = REL_NAMES.every(rel => Array.isArray(mat.slots?.[rel]) && mat.slots[rel].length===0);
-    return badModel || tooOld || empty;
-  }
-
-  const ADJ_SCHEMA = {
-    type:"object",
-    additionalProperties:false,
-    required:["token","model","version","slots","meta"],
-    properties:{
-      token:{type:"string"},
-      model:{type:"string"},
-      version:{type:"integer",const:1},
-      slots:{
-        type:"object",
-        additionalProperties:false,
-        properties:Object.fromEntries(REL_NAMES.map(r=>[r,{type:"array",items:{
-          type:"object",
-          additionalProperties:false,
-          required:["token","w"],
-          properties:{ token:{type:"string"}, w:{type:"number",minimum:0,maximum:1} }
-        }}])),
-        required:REL_NAMES
-      },
-      meta:{
-        type:"object",
-        additionalProperties:false,
-        required:["language","downloaded_at","source"],
-        properties:{
-          language:{type:"string",const:"en"},
-          downloaded_at:{type:"string"},
-          source:{type:"string",enum:["LLM","BOOTSTRAP","HEURISTIC"]}
+    function saveToCache(token, data) {
+      try {
+        localStorage.setItem(getCacheKey(token), JSON.stringify({
+          ...data,
+          cached_at: new Date().toISOString()
+        }));
+      } catch (err) {
+        if (err.name === 'QuotaExceededError') {
+          logWarning('Cache storage full. Consider clearing old data with /reset');
+        } else {
+          console.error('Cache write error:', err);
         }
       }
     }
-  };
 
-  // --- HLSF engine (pure functions) ---
-  function simpleHash(input){
-    let h=0;
-    for(let i=0;i<input.length;i++){h=(h*31+input.charCodeAt(i))>>>0;}
-    return h.toString(16).padStart(8,"0");
-  }
-  function tokenizeWords(s){
-    if(!s) return [];
-    const cleaned = s.toLowerCase().replace(/[^a-z0-9'\- ]+/g,' ');
-    const rawTokens = cleaned.split(/\s+/).filter(Boolean);
-    const tokens = [];
-    for(const raw of rawTokens){
-      const canonical = canonToken(raw);
-      if(!canonical) continue;
-      const pieces = String(canonical).split(/\s+/).filter(Boolean);
-      for(const piece of pieces){
-        const normalized = canonToken(piece);
-        if(normalized) tokens.push(normalized);
+    // ============================================
+    // OPENAI API
+    // ============================================
+    async function callOpenAI(messages, options = {}) {
+      if (!state.apiKey) {
+        throw new Error('No API key configured');
       }
-    }
-    return tokens;
-  }
 
-  function isClosedClass(token){
-    return token.startsWith("{") || STOP_TOKENS.has(token);
-  }
+      const body = {
+        model: options.model || CONFIG.DEFAULT_MODEL,
+        messages,
+        max_tokens: options.max_tokens || 1000,
+        temperature: options.temperature || 0.7,
+      };
 
-  function buildClosedClassMatrix(token){
-    const slots = Object.fromEntries(REL_NAMES.map(r => [r,[]]));
-    const push = (slot, neighbor, w) => { slots[slot].push({ token: neighbor, w }); };
-    if(token === "{speaker}"){
-      push("Defines","first person singular",0.95);
-      push("Functions As","deictic pronoun",0.88);
-      push("Refers To","author of utterance",0.86);
-      push("Associated With","self reference",0.82);
-      push("Co-occurs With","am",0.74);
-      push("Co-occurs With","my",0.72);
-    } else if(token === "{addressee}"){
-      push("Defines","second person",0.95);
-      push("Functions As","deictic pronoun",0.88);
-      push("Refers To","listener",0.86);
-      push("Associated With","directive",0.80);
-      push("Co-occurs With","are",0.74);
-      push("Co-occurs With","your",0.72);
-    } else {
-      push("Functions As","closed-class token",0.9);
-      push("Associated With","syntactic scaffolding",0.82);
-      push("Co-occurs With","content word",0.6);
-    }
-    return {
-      token,
-      model: String(MODEL || "heuristic"),
-      version:1,
-      slots,
-      meta:{ language:"en", downloaded_at:new Date().toISOString(), source:"HEURISTIC" }
-    };
-  }
+      let attempt = 0;
+      const maxAttempts = options.retries || CONFIG.MAX_RETRY_ATTEMPTS;
 
-  function windowAround(tokens, target, W=3){
-    const idx = tokens.indexOf(target);
-    if(idx < 0) return "";
-    const left = Math.max(0, idx-W);
-    const right = Math.min(tokens.length, idx+W+1);
-    return tokens.slice(left, right).join(" ");
-  }
-  function scoreCentrality(matrix){
-    const totals={}; let maxSlot=0; let global=0;
-    for(const rel of REL_NAMES){
-      const entries=matrix.slots?.[rel]||[];
-      const sum=entries.reduce((acc,item)=>acc+(item.w||0),0);
-      totals[rel]=sum;
-      if(sum>maxSlot) maxSlot=sum;
-      global+=sum;
-    }
-    const normalized={}; const denom=maxSlot||1;
-    for(const rel of REL_NAMES){ normalized[rel]=Number((totals[rel]/denom).toFixed(4)); }
-    return { perSlot:normalized, total:Number(global.toFixed(4)) };
-  }
-  function formalizeHierarchy(matrices){
-    if(!Array.isArray(matrices)) return { layers:new Map(), stats:[] };
-    const stats=matrices.map(m=>({ token:m.token, centrality:scoreCentrality(m).total }));
-    const values=stats.map(s=>s.centrality).sort((a,b)=>a-b);
-    const quantile=(q)=>{ if(!values.length) return 0; const idx=Math.min(values.length-1, Math.floor(q*(values.length-1))); return values[idx]; };
-    const thresholds={ core:quantile(0.8), inner:quantile(0.5), outer:quantile(0.2) };
-    const layers=new Map();
-    for(const {token,centrality} of stats){
-      let layer=3;
-      if(centrality>=thresholds.core) layer=0;
-      else if(centrality>=thresholds.inner) layer=1;
-      else if(centrality>=thresholds.outer) layer=2;
-      layers.set(token,layer);
-    }
-    return { layers, stats, thresholds };
-  }
-  function selectNeighbors(matrix, fanout){
-    const neighbors=new Map();
-    for(const rel of REL_NAMES){
-      const entries=(matrix.slots?.[rel]||[]).slice().sort((a,b)=>b.w-a.w).slice(0,fanout);
-      neighbors.set(rel, entries.map(item=>({ ...item })));
-    }
-    return neighbors;
-  }
-  function crossLevelExpand(inputMats, outputMats, depth=2, fanout=5){
-    const matrices=new Map();
-    for(const m of [...inputMats,...outputMats]) matrices.set(m.token,m);
-    const graph=new Map();
-    const queue=[];
-    for(const token of matrices.keys()) queue.push({token,depth:0});
-    const visited=new Set();
-    while(queue.length){
-      const {token,depth:d}=queue.shift();
-      if(visited.has(token)||d>depth) continue;
-      visited.add(token);
-      const matrix=matrices.get(token);
-      if(!matrix) continue;
-      const neighbors=selectNeighbors(matrix,fanout);
-      graph.set(token,{token,neighbors,depth:d});
-      if(d===depth) continue;
-      for(const entries of neighbors.values()){
-        for(const entry of entries){
-          if(!visited.has(entry.token)) queue.push({token:entry.token, depth:d+1});
+      while (attempt < maxAttempts) {
+        // Check if cancelled before each attempt
+        if (currentAbortController?.signal.aborted) {
+          const error = new Error('Request cancelled');
+          error.name = 'AbortError';
+          throw error;
         }
-      }
-    }
-    return { graph, visited:Array.from(visited) };
-  }
-  function dynamicReorg(graphState){
-    const { graph } = graphState;
-    const reorganized=new Map();
-    const now=Date.now();
-    for(const [token,node] of graph.entries()){
-      const edges=[];
-      for(const [rel,entries] of node.neighbors.entries()){
-        for(const entry of entries){
-          const base=entry.lastSeen?now-entry.lastSeen:1;
-          const recency=1/(1+Math.log10(1+base));
-          const score=Number((entry.w*recency).toFixed(4));
-          edges.push({ token:entry.token, rel, score });
-        }
-      }
-      edges.sort((a,b)=>b.score-a.score);
-      reorganized.set(token,{token,edges});
-    }
-    return { ...graphState, reorganized };
-  }
-  function attentionEmbed(graphState){
-    const { reorganized } = graphState;
-    const embeddings=new Map();
-    for(const [token,node] of reorganized.entries()){
-      let total=0;
-      for(const edge of node.edges) total+=edge.score;
-      const value=total===0?0:Math.tanh(total);
-      embeddings.set(token,Number(value.toFixed(4)));
-    }
-    return { ...graphState, embeddings };
-  }
-  function propagateNonLocal(graphState){
-    const { reorganized, embeddings } = graphState;
-    const propagated=new Map();
-    for(const [token,node] of reorganized.entries()){
-      const neighbors=node.edges;
-      if(!neighbors.length){
-        propagated.set(token, embeddings.get(token)||0);
-        continue;
-      }
-      let sum=0;
-      for(const edge of neighbors){
-        sum+=(embeddings.get(edge.token)||0)*edge.score;
-      }
-      const value=sum/neighbors.length;
-      propagated.set(token, Number(value.toFixed(4)));
-    }
-    return { ...graphState, propagated };
-  }
-  function bootstrapFromText(tokens){
-    if(!Array.isArray(tokens)||tokens.length<2) return [];
-    const edges=new Map();
-    const seqW=0.7;
-    const coW=0.3;
-    for(let i=0;i<tokens.length-1;i++){
-      const a=tokens[i];
-      const b=tokens[i+1];
-      if(!a||!b) continue;
-      const key=`${a}|${b}`;
-      edges.set(key,(edges.get(key)||0)+seqW);
-    }
-    const window=2;
-    for(let i=0;i<tokens.length;i++){
-      for(let j=i+1;j<=i+window && j<tokens.length;j++){
-        const a=tokens[i];
-        const b=tokens[j];
-        if(!a||!b) continue;
-        const key=`${a}|${b}`;
-        edges.set(key,(edges.get(key)||0)+coW/(j-i));
-      }
-    }
-    return Array.from(edges.entries()).map(([key,weight])=>{
-      const [a,b]=key.split("|");
-      return { a, b, w: Math.min(1, weight) };
-    });
-  }
-  function integrateBootstrapEdges(graphState, bootstrapEdges){
-    if(!Array.isArray(bootstrapEdges)||!bootstrapEdges.length) return graphState;
-    const reorganized=new Map(graphState.reorganized||[]);
-    for(const edge of bootstrapEdges){
-      if(!edge||!edge.a||!edge.b) continue;
-      if(!reorganized.has(edge.a)) reorganized.set(edge.a,{ token:edge.a, edges:[] });
-      const node=reorganized.get(edge.a);
-      const score=Number(edge.w||0);
-      node.edges.push({ token:edge.b, rel:"Sequence Of", score:Number(score.toFixed(4)) });
-    }
-    return { ...graphState, reorganized };
-  }
-  function composeInsightGraph({ matrices=[], hierarchyData={}, dynamicData={}, attentionData={}, propagationData={} }={}){
-    const nodes=new Map();
-    const edges=[];
-    const layers = hierarchyData?.layers instanceof Map ? hierarchyData.layers : new Map();
-    const centralityLookup=new Map();
-    for(const matrix of matrices){
-      if(!matrix?.token) continue;
-      centralityLookup.set(matrix.token, scoreCentrality(matrix).total);
-    }
-    const reorganized = dynamicData?.reorganized instanceof Map ? dynamicData.reorganized : new Map();
-    for(const [token,node] of reorganized.entries()){
-      if(!nodes.has(token)){
-        nodes.set(token,{ token, edges:[], centrality:0, layer:layers.get(token) ?? 3, attention:0, propagation:0 });
-      }
-      const entry=nodes.get(token);
-      entry.edges=node.edges.map(edge=>({ token:edge.token, rel:edge.rel, score:Number(edge.score??0) }));
-      for(const edge of entry.edges){
-        edges.push({ a:token, b:edge.token, w:edge.score, rel:edge.rel });
-      }
-    }
-    const attention = attentionData?.embeddings instanceof Map ? attentionData.embeddings : new Map();
-    const propagation = propagationData?.propagated instanceof Map ? propagationData.propagated : new Map();
-    const allTokens=new Set([...centralityLookup.keys(), ...reorganized.keys(), ...attention.keys(), ...propagation.keys()]);
-    for(const token of allTokens){
-      if(!nodes.has(token)){
-        nodes.set(token,{ token, edges:[], centrality:0, layer:layers.get(token) ?? 3, attention:0, propagation:0 });
-      }
-      const entry=nodes.get(token);
-      entry.centrality=Number(centralityLookup.get(token) ?? entry.centrality ?? 0);
-      entry.layer=Number.isFinite(layers.get(token)) ? layers.get(token) : entry.layer ?? 3;
-      entry.attention=Number(attention.get(token) ?? entry.attention ?? 0);
-      entry.propagation=Number(propagation.get(token) ?? entry.propagation ?? 0);
-    }
-    return {
-      nodes:Array.from(nodes.values()).map(node=>({
-        ...node,
-        centrality:Number(node.centrality ?? 0),
-        attention:Number(node.attention ?? 0),
-        propagation:Number(node.propagation ?? 0),
-        layer:Number.isFinite(node.layer) ? node.layer : 3
-      })),
-      edges
-    };
-  }
-  function rankByCentrality(graph){
-    if(!graph) return [];
-    const nodes=Array.isArray(graph.nodes)?graph.nodes:[];
-    return nodes
-      .map(node=>({
-        token:node.token,
-        score:Number(node.centrality ?? 0)+0.5*Number(node.attention ?? 0)+0.25*Number(node.propagation ?? 0)
-      }))
-      .filter(entry=>entry.token)
-      .sort((a,b)=>b.score-a.score);
-  }
-  function findTopBridges(graph){
-    if(!graph) return [];
-    const layerMap=new Map();
-    for(const node of graph.nodes||[]){
-      layerMap.set(node.token, Number.isFinite(node.layer)?node.layer:3);
-    }
-    const edges=(graph.edges||[]).map(edge=>{
-      const layerGap=Math.abs((layerMap.get(edge.a) ?? 3)-(layerMap.get(edge.b) ?? 3));
-      return { a:edge.a, b:edge.b, w:Number(edge.w ?? 0), layerGap, score:layerGap*2+Number(edge.w ?? 0) };
-    });
-    return edges.filter(edge=>edge.a&&edge.b).sort((a,b)=>b.score-a.score).slice(0,10);
-  }
-  function countLayerMoves(graph){
-    if(!graph) return 0;
-    const nodes=Array.isArray(graph.nodes)?graph.nodes:[];
-    return nodes.filter(node=>(node.layer ?? 3) <= 1).length;
-  }
-  function suggestNext(graph){
-    if(!graph) return [];
-    const nodes=Array.isArray(graph.nodes)?graph.nodes:[];
-    return nodes
-      .map(node=>({ token:node.token, value:Number(node.propagation ?? 0)-0.3*Number(node.centrality ?? 0) }))
-      .filter(entry=>entry.token)
-      .sort((a,b)=>b.value-a.value)
-      .map(entry=>entry.token);
-  }
-  function synthesizeEmergentThoughts(graph){
-    const top=rankByCentrality(graph).slice(0,3).map(x=>x.token);
-    const bridges=findTopBridges(graph).slice(0,2).map(edge=>`${edge.a}↔${edge.b}`);
-    const bullets=[];
-    if(top.length) bullets.push(`Core topics converging: ${top.join(", ")}`);
-    if(bridges.length) bullets.push(`Bridging links: ${bridges.join("; ")}`);
-    bullets.push(`Layer reorg: ${countLayerMoves(graph)} tokens shifted upward`);
-    bullets.push(`Attention focus rising on: ${top[0]||"—"}`);
-    const next=suggestNext(graph).slice(0,3);
-    bullets.push(`Next expansions suggested: ${next.length?next.join(", "):"—"}`);
-    while(bullets.length<5){ bullets.push("Signal pending expansion: —"); }
-    return bullets;
-  }
-  function formatRunReport(stepLogs){
-    if(!Array.isArray(stepLogs)||!stepLogs.length) return "No steps recorded.";
-    const lines=[];
-    for(const step of stepLogs){
-      const duration=Math.max(0, Math.round((step.t1??step.t0??0)-(step.t0??0)));
-      const status=step.ok?"✔":"✖";
-      const note=step.note?` — ${step.note}`:"";
-      lines.push(`${status} ${step.name} (${duration}ms)${note}`);
-    }
-    return lines.join("\n");
-  }
-  function reflectRewrite(original, emergentBullets){
-    const bulletText=Array.isArray(emergentBullets)?emergentBullets.map(b=>`- ${b}`).join("\n"):String(emergentBullets||"");
-    const draftId=simpleHash(original+"|"+bulletText);
-    return {
-      draftId,
-      payload:`Original answer:\n${original}\n\nSignals (emergent thoughts):\n${bulletText}\n\nRewrite the answer to be clearer, better-structured, and more complete. Keep it self-contained. Avoid revealing the internal analysis. Return plain text.`
-    };
-  }
 
-  // --- LLM adapter ---
-  let OPENAI_KEY = null;
-  let MODEL = "gpt-4o-mini";
-  let DEPTH = 2;
-  let FANOUT = 5;
-
-  async function streamChat(messages, onDelta) {
-    if(!OPENAI_KEY) throw new Error("API key required");
-    const res = await fetch("https://api.openai.com/v1/chat/completions",{
-      method:"POST",
-      headers:{"Content-Type":"application/json","Authorization":"Bearer "+OPENAI_KEY},
-      body:JSON.stringify({ model:MODEL, messages, stream:true })
-    });
-    if(!res.ok) throw new Error(`OpenAI error: ${res.status}`);
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while(true){
-      const {value,done} = await reader.read();
-      if(done) break;
-      buffer += decoder.decode(value,{stream:true});
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop();
-      for(const part of parts){
-        if(!part.startsWith("data:")) continue;
-        const data = part.slice(5).trim();
-        if(!data || data === "[DONE]") continue;
-        try{
-          const parsed = JSON.parse(data);
-          const delta = parsed.choices?.[0]?.delta?.content;
-          if(delta) onDelta(delta);
-        }catch{ /* ignore */ }
-      }
-    }
-  }
-
-  async function getContextHint(token){
-    const res = await fetch("https://api.openai.com/v1/chat/completions",{
-      method:"POST",
-      headers:{"Content-Type":"application/json","Authorization":"Bearer "+OPENAI_KEY},
-      body:JSON.stringify({
-        model:MODEL,
-        temperature:0.4,
-        messages:[
-          { role:"system", content:CONTEXT_HINT_SYS },
-          { role:"user", content:`Token: "${token}"` }
-        ]
-      })
-    });
-    if(!res.ok) throw new Error(`OpenAI ${res.status}`);
-    const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content || "";
-    return text.slice(0,300);
-  }
-
-  async function callAdjLLM({ token, context, forced=false }){
-    const sys = (forced?ADJ_FORCED:ADJ_BASE)+
-      `\nSchema:\n{"token":"<lowercase>","model":"<ignored>","version":1,"slots":{...50 keys...},"meta":{"language":"en","downloaded_at":"<ISO>","source":"LLM"}}`;
-    const user = `token="${String(token).toLowerCase()}". Context: ${context||"n/a"}. Example JSON (style only):\n${FEWSHOT_STRING}`;
-    const res = await fetch("https://api.openai.com/v1/chat/completions",{
-      method:"POST",
-      headers:{"Content-Type":"application/json","Authorization":"Bearer "+OPENAI_KEY},
-      body:JSON.stringify({
-        model:MODEL,
-        temperature: forced?0.6:0.4,
-        top_p:0.95,
-        messages:[
-          { role:"system", content:sys },
-          { role:"user", content:user }
-        ],
-        response_format:{ type:"json_object" }
-      })
-    });
-    if(!res.ok) throw new Error(`OpenAI ${res.status}`);
-    const data = await res.json();
-    return data?.choices?.[0]?.message?.content || "{}";
-  }
-
-  function suggestGenericNeighbors(t){
-    const commons = ["meaning","context","usage","definition","example","related term","synonym"];
-    const lower = String(t||"").toLowerCase();
-    return commons.filter(x=>x!==lower).slice(0,6);
-  }
-
-  async function getAdjMatrix(token, allTokens=[]) {
-    const canonical = canonToken(token);
-    const normalized = canonical || String(token ?? "").toLowerCase().trim();
-    if(canonical && canonical !== token){
-      print(`ℹ canonicalized token → "${canonical}"`, "line");
-    }
-    if(!normalized) throw new Error("Token required");
-    const cached = await DB.get(normalized);
-    if(cached){
-      const cacheErr = validateAdjMatrix(cached);
-      const junk = !cacheErr && isJunkMatrix(cached);
-      if(!junk && !cacheErr){
-        const cacheSource = cached.meta?.source === "HEURISTIC" ? "heuristic" : "cache";
-        return { matrix: cached, source: cacheSource };
-      }
-      try { await DB.del(normalized); } catch(_){ }
-      if(cached.token && cached.token !== normalized){
-        try { await DB.del(cached.token); } catch(_){ }
-      }
-      const reason = junk ? "junk matrix purged" : cacheErr;
-      print(`ℹ ignoring cached matrix for "${normalized}": ${reason}`);
-    }
-
-    if(isClosedClass(normalized)){
-      const heuristic = buildClosedClassMatrix(normalized);
-      await DB.set(heuristic.token, heuristic);
-      return { matrix: heuristic, source: "heuristic" };
-    }
-
-    if(!OPENAI_KEY) throw new Error("API key required");
-
-    const contextTokens = Array.isArray(allTokens)
-      ? allTokens.map(t => canonToken(t)).filter(Boolean)
-      : [];
-    const windowCtx = windowAround(contextTokens, normalized, 4);
-
-    const persist = async (matrix) => {
-      await DB.set(matrix.token, matrix);
-    };
-    const parse = (text) => {
-      const raw = safeExtractJSON(text);
-      if(!raw) throw new Error("Adjacency JSON parse failed");
-      return raw;
-    };
-    const runPass = async (params={}) => {
-      const context = params.context ?? windowCtx;
-      const text = await callAdjLLM({ token: normalized, context, forced: params.forced });
-      const raw = parse(text);
-      const result = sanitizeAdjMatrix(raw,{ token: normalized, model: MODEL });
-      const err = validateAdjMatrix(result.out);
-      if(err) throw new Error(`Schema mismatch: ${err}`);
-      return result;
-    };
-
-    let { out, nonEmpty } = await runPass();
-    if(nonEmpty >= MIN_NEIGHBORS_BASE){
-      await persist(out);
-      const source = out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download";
-      return { matrix: out, source };
-    }
-    print(PASS1_STATUS);
-
-    let context = "";
-    try {
-      context = await getContextHint(normalized);
-    } catch (err) {
-      print(`Context hint failed: ${err.message}`);
-      context = "";
-    }
-
-    const mergedContext = [windowCtx, context].filter(Boolean).join(" | ");
-
-    ({ out, nonEmpty } = await runPass({ context: mergedContext }));
-    if(nonEmpty >= MIN_NEIGHBORS_BASE){
-      await persist(out);
-      const source = out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download";
-      return { matrix: out, source };
-    }
-    print(PASS2_STATUS);
-
-    ({ out, nonEmpty } = await runPass({ context: mergedContext, forced:true }));
-    if(nonEmpty >= MIN_NEIGHBORS_FORCED){
-      await persist(out);
-      const source = out.meta.source === "BOOTSTRAP" ? "bootstrap" : "download";
-      return { matrix: out, source };
-    }
-    print(PASS3_STATUS);
-
-    out.meta.source = "BOOTSTRAP";
-    out.meta.downloaded_at = new Date().toISOString();
-    out.slots["Co-occurs With"] = suggestGenericNeighbors(normalized).map((t,i)=>({ token:t, w:Math.max(0.3, 0.9 - 0.05*i) }));
-    const bootstrapErr = validateAdjMatrix(out);
-    if(bootstrapErr) throw new Error(`Schema mismatch: ${bootstrapErr}`);
-    await persist(out);
-    return { matrix: out, source:"bootstrap" };
-  }
-
-  // --- Terminal helpers ---
-  const term = document.getElementById("term");
-  const inputEl = document.getElementById("in");
-  const dirView = document.getElementById("dirView");
-  const dirList = document.getElementById("dirList");
-
-  function print(txt, cls=""){
-    const d=document.createElement("div");
-    d.className=`line ${cls}`;
-    d.textContent=txt;
-    term.appendChild(d);
-    term.scrollTop=term.scrollHeight;
-    return d;
-  }
-
-  function printCollapsible(title, getContent){
-    const line = print(`▸ ${title}`,"collapsible");
-    let open=false;
-    let child=null;
-    line.addEventListener("click", async () => {
-      open=!open;
-      if(open){
-        line.textContent=`▾ ${title}`;
-        child=print("","indent");
+        attempt++;
         try {
-          const content = await getContent();
-          if(typeof content === "string") child.textContent=content;
-          else child.replaceWith(content);
+          const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${state.apiKey}`,
+            },
+            body: JSON.stringify(body),
+          });
+
+          if (response.status === 429 && attempt < maxAttempts) {
+            const delay = CONFIG.RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            let errorMessage = `OpenAI API error (${response.status})`;
+            
+            try {
+              const errorData = JSON.parse(errorText);
+              if (errorData.error?.message) {
+                errorMessage = errorData.error.message;
+              }
+            } catch (e) {
+              // If not JSON, use the raw text
+              if (errorText) errorMessage = errorText;
+            }
+            
+            // Provide helpful hints
+            if (response.status === 401) {
+              errorMessage = 'Invalid API key. Please check your OpenAI API key and try again.';
+            } else if (response.status === 403) {
+              errorMessage = 'Access forbidden. Your API key may not have permission or your account may need billing setup.';
+            } else if (response.status === 429) {
+              errorMessage = 'Rate limit exceeded. Please wait a moment and try again.';
+            }
+            
+            throw new Error(errorMessage);
+          }
+
+          const data = await response.json();
+          
+          // Track cost
+          state.sessionStats.totalApiCalls++;
+          state.sessionStats.totalCostCents += Math.ceil(CONFIG.ESTIMATED_COST_PER_API_CALL * 100);
+          updateStats();
+
+          return data.choices?.[0]?.message?.content?.trim() || '';
         } catch (err) {
-          child.textContent=`Error: ${err.message}`;
-        }
-      } else {
-        line.textContent=`▸ ${title}`;
-        child?.remove();
-      }
-    });
-    return line;
-  }
-
-  function renderMatrixJSON(matrix){
-    const pre=document.createElement("div");
-    const lines=[];
-    lines.push(`token: ${matrix.token} (model ${matrix.model})`);
-    for(const rel of REL_NAMES){
-      const entries = matrix.slots[rel];
-      if(!entries.length) continue;
-      lines.push(`  ${rel}:`);
-      for(const item of entries){
-        lines.push(`    - ${item.token} (${item.w.toFixed(3)})`);
-      }
-    }
-    pre.textContent = lines.join("\n") || "(empty)";
-    return pre;
-  }
-
-  const shownTokens = new Set();
-
-  async function showToken(token, { force = false } = {}){
-    try {
-      const normalized = canonToken(token) || token;
-      if(!force && shownTokens.has(normalized)) return;
-      const { matrix, source } = await getAdjMatrix(token, [normalized]);
-      shownTokens.add(matrix.token);
-      shownTokens.add(normalized);
-      const title = `token: "${matrix.token}" [model ${matrix.model}] (${source})`;
-      printCollapsible(title, async () => {
-        const container = document.createElement("div");
-        container.className="indent";
-        const meta = document.createElement("div");
-        meta.textContent = `downloaded_at: ${matrix.meta.downloaded_at}`;
-        container.appendChild(meta);
-        for(const rel of REL_NAMES){
-          const entries = matrix.slots[rel];
-          if(!entries.length) continue;
-          const relDiv = document.createElement("div");
-          relDiv.textContent = `${rel}:`;
-          container.appendChild(relDiv);
-          for(const item of entries){
-            const row = document.createElement("div");
-            const link = document.createElement("span");
-            link.className="token-link";
-            link.textContent=item.token;
-            link.onclick = () => showToken(item.token);
-            row.appendChild(document.createTextNode("  - "));
-            row.appendChild(link);
-            row.appendChild(document.createTextNode(` (${item.w.toFixed(3)})`));
-            container.appendChild(row);
+          if (err.name === 'AbortError') {
+            throw err;
+          }
+          
+          // Better error messages for network issues
+          if (err.message === 'Failed to fetch') {
+            throw new Error('Network error: Unable to reach OpenAI API. Please check your internet connection.');
+          }
+          
+          if (attempt === maxAttempts) {
+            throw err;
           }
         }
-        if(container.children.length===1){
-          const none = document.createElement("div");
-          none.textContent="(no neighbors)";
-          container.appendChild(none);
-        }
-        return container;
-      });
-    } catch (err) {
-      print(`Failed to open token ${token}: ${err.message}`,"fail");
+      }
     }
-  }
 
-  async function refreshDirectory(){
-    dirList.textContent="Loading...";
-    try {
-      const keys = await DB.keys();
-      if(!keys.length){
-        dirList.textContent="No matrices cached.";
+    // ============================================
+    // ADJACENCY FETCHING
+    // ============================================
+    async function fetchAdjacency(token, context) {
+      // Check if cancelled
+      if (currentAbortController?.signal.aborted) {
+        throw new Error('AbortError');
+      }
+
+      // Check cache first
+      const cached = getFromCache(token);
+      if (cached) {
+        return { ...cached, cache_hit: true };
+      }
+
+      if (!state.apiKey) {
+        return { token, relationships: {}, offline: true };
+      }
+
+      const prompt = `Token: "${token}"
+Context: "${context}"
+
+For this token, identify the most relevant adjacent tokens across the 50 Pentacognon relationship types. For each relationship type that applies, provide 0-10 related tokens with weights from 0.01 to 1.00.
+
+Relationship types:
+≡ Identity, ⊃ Contains, ⊂ Is Contained By, ≈ Variant, ∈ Is Instance Of, ∋ Has Instance, ⊤ Is Type Of, ⊥ Has Type, ⊏ Part Of, ⊐ Composes, ↔ Mirrors, ⇌ Inverts, ∥ Parallel To, ∼ Adjacent To, → Next, ⇒ Sequence Of, ⇐ Preceded By, ↠ Follows, ↗ Spatially Above, ↘ Spatially Below, ⇝ Symbolically Supports, ⇂ Symbolically Depends, ≠ Contrasts, ⊕ Complements, ⊛ Associated With, ∝ Correlates With, ⇝ Causes, ⇐ Caused By, ∗ Evokes, ≜ Represents, ⋆ Symbolizes, 7→ Refers To, ⊢ Defines, ⊣ Is Defined By, ↷ Transforms To, ↶ Transformed From, ◦ Functions As, |= Interpreted As, ◁ Used With, ⇄ Co-occurs With, ⊗ Synthesizes, ÷ Divides Into, ⊘ Opposes, × Rejects, ¬ Negates, † Destroys, ⊠ Blocks, /∈ Invalidates, ⊬ Contradicts, ⊩ Asserts, ⊨ Provides Evidence, ? Uncertainty, ⚡ Memory, ⇒ Attention, ↶ Self-Reference, ∧ Perspective, ↭ Continuity, ▷◁ Relationality
+
+Return as JSON:
+{
+  "token": "${token}",
+  "relationships": {
+    "≡": [{"token": "...", "weight": 0.95}],
+    ...
+  }
+}
+
+Only include relationship types that apply. Leave others empty or omit.`;
+
+      const content = await callOpenAI([
+        { role: 'system', content: 'You are an HLSF token adjacency analyzer.' },
+        { role: 'user', content: prompt },
+      ]);
+
+      try {
+        const jsonStart = content.indexOf('{');
+        const jsonEnd = content.lastIndexOf('}');
+        const jsonText = content.slice(jsonStart, jsonEnd + 1);
+        const parsed = JSON.parse(jsonText);
+        
+        saveToCache(token, parsed);
+        return { ...parsed, cache_hit: false };
+      } catch (err) {
+        logError(`Failed to parse adjacency for "${token}"`);
+        return { token, relationships: {}, error: err.message };
+      }
+    }
+
+    async function batchFetchAdjacencies(tokens, context, label) {
+      const statusEntry = logStatus(`⏳ Fetching adjacencies for ${label}...`);
+      const results = new Map();
+      const uniqueTokens = [...new Set(tokens)];
+      
+      let processed = 0;
+      const concurrency = CONFIG.MAX_CONCURRENCY;
+      
+      for (let i = 0; i < uniqueTokens.length; i += concurrency) {
+        // Check for cancellation
+        if (currentAbortController?.signal.aborted) {
+          statusEntry.innerHTML = `⚠️ ${label} adjacencies cancelled (${processed}/${uniqueTokens.length})`;
+          break;
+        }
+        
+        const batch = uniqueTokens.slice(i, i + concurrency);
+        const promises = batch.map(token => fetchAdjacency(token, context));
+        const batchResults = await Promise.allSettled(promises);
+        
+        batchResults.forEach((result, idx) => {
+          if (result.status === 'fulfilled') {
+            results.set(batch[idx], result.value);
+          } else {
+            logError(`Failed to fetch adjacency for "${batch[idx]}"`);
+          }
+        });
+        
+        processed += batch.length;
+        statusEntry.innerHTML = `⏳ Fetching adjacencies for ${label}... (${processed}/${uniqueTokens.length})`;
+      }
+      
+      const cacheHits = Array.from(results.values()).filter(r => r.cache_hit).length;
+      statusEntry.innerHTML = `✅ Completed ${label} adjacencies (${cacheHits} cached, ${results.size - cacheHits} new)`;
+      
+      return results;
+    }
+
+    // ============================================
+    // ANALYSIS FUNCTIONS
+    // ============================================
+    function calculateAttentionScores(matrices) {
+      for (const entry of matrices.values()) {
+        const relationships = entry?.relationships || {};
+        let weightSum = 0;
+        let totalEdges = 0;
+        
+        for (const [relation, edges] of Object.entries(relationships)) {
+          const priority = RELATIONSHIP_PRIORITIES.get(relation) || 0.3;
+          if (Array.isArray(edges)) {
+            for (const edge of edges) {
+              const weight = Number(edge.weight) || 0;
+              weightSum += weight * priority;
+              totalEdges++;
+            }
+          }
+        }
+        
+        entry.attention_score = totalEdges > 0 ? Number((weightSum / totalEdges).toFixed(3)) : 0;
+        entry.total_relationships = totalEdges;
+      }
+      return matrices;
+    }
+
+    // ============================================
+    // COMMAND HANDLING
+    // ============================================
+    function isCommand(input) {
+      return input.startsWith('/');
+    }
+
+    async function handleCommand(cmd) {
+      const [command, ...args] = cmd.slice(1).split(/\s+/);
+      
+      switch (command.toLowerCase()) {
+        case 'clear':
+          elements.log.innerHTML = '';
+          logSuccess('Log cleared');
+          break;
+          
+        case 'reset':
+          if (confirm('Clear all cached adjacency data?')) {
+            const keys = Object.keys(localStorage).filter(k => k.startsWith('hlsf_token_'));
+            keys.forEach(k => localStorage.removeItem(k));
+            updateStats();
+            logSuccess(`Cleared ${keys.length} cached tokens`);
+          }
+          break;
+          
+        case 'stats':
+          const { totalApiCalls, totalCacheHits, totalCostCents } = state.sessionStats;
+          const total = totalApiCalls + totalCacheHits;
+          const hitRate = total > 0 ? ((totalCacheHits / total) * 100).toFixed(1) : 0;
+          addLogEntry(`
+            <strong>Session Statistics:</strong><br>
+            • Total requests: ${total}<br>
+            • Cache hits: ${totalCacheHits} (${hitRate}%)<br>
+            • API calls: ${totalApiCalls}<br>
+            • Session cost: ${formatCurrency(totalCostCents)}<br>
+            • Cached tokens: ${getCachedTokenCount()}
+          `);
+          break;
+          
+        case 'help':
+          addLogEntry(`
+            <strong>Available Commands:</strong><br>
+            /clear - Clear the log<br>
+            /reset - Clear cached adjacency data<br>
+            /stats - Show session statistics<br>
+            /help - Show this help message
+          `);
+          break;
+          
+        default:
+          logError(`Unknown command: ${command}`);
+      }
+    }
+
+    // ============================================
+    // MAIN PROCESSING
+    // ============================================
+    async function processPrompt(prompt) {
+      if (state.isProcessing) return;
+      
+      state.isProcessing = true;
+      currentAbortController = new AbortController();
+      elements.sendBtn.disabled = true;
+      elements.cancelBtn.style.display = 'inline-block';
+      elements.input.disabled = true;
+
+      const startTime = performance.now();
+
+      try {
+        // Validate input
+        const tokens = tokenize(prompt);
+        if (tokens.length === 0) {
+          logError('Prompt cannot be empty');
+          return;
+        }
+        if (tokens.length > CONFIG.MAX_TOKENS_PER_PROMPT) {
+          logError(`Prompt exceeds ${CONFIG.MAX_TOKENS_PER_PROMPT} token limit (${tokens.length} tokens)`);
+          return;
+        }
+
+        // Estimate cost
+        const estimatedApiCalls = tokens.length * 2 + 3; // Rough estimate
+        const estimatedCost = estimateCost(estimatedApiCalls);
+        addLogEntry(`
+          <div class="cost-estimate">
+            <div class="cost-estimate-title">📊 Processing Estimate</div>
+            • Input tokens: ${tokens.length}<br>
+            • Estimated API calls: ~${estimatedApiCalls}<br>
+            • Estimated cost: ~${formatCurrency(Math.ceil(estimatedCost * 100))}
+          </div>
+        `);
+
+        addLogEntry(`🧮 Processing ${tokens.length} input tokens...`);
+
+        // Step 1: Get initial LLM response
+        let initialResponse = '';
+        if (state.apiKey) {
+          const statusEntry = logStatus('⏳ Generating initial response...');
+          initialResponse = await callOpenAI([
+            { role: 'system', content: 'You are an expert assistant that provides clear, concise responses.' },
+            { role: 'user', content: prompt },
+          ]);
+          statusEntry.innerHTML = `✅ Initial response generated (${countTokens(initialResponse)} tokens)`;
+        } else {
+          initialResponse = '⚠️ Offline mode: API key required for live processing';
+          logWarning('Skipped LLM call (offline mode)');
+        }
+
+        // Step 2: Fetch adjacencies
+        const responseTokens = tokenize(initialResponse);
+        const [inputMatrices, outputMatrices] = await Promise.all([
+          batchFetchAdjacencies(tokens, prompt, 'input'),
+          batchFetchAdjacencies(responseTokens, initialResponse, 'output'),
+        ]);
+
+        // Step 3: Calculate attention
+        calculateAttentionScores(inputMatrices);
+        calculateAttentionScores(outputMatrices);
+
+        // Step 4: Generate synthesis
+        let synthesis = '';
+        if (state.apiKey) {
+          const statusEntry = logStatus('⏳ Synthesizing insights...');
+          const summaryData = Array.from(inputMatrices.entries())
+            .map(([token, data]) => ({ token, attention: data.attention_score }))
+            .sort((a, b) => b.attention - a.attention)
+            .slice(0, 10);
+
+          synthesis = await callOpenAI([
+            { role: 'system', content: 'You analyze token relationships to extract insights.' },
+            { role: 'user', content: `Analyze these token attention scores and identify key patterns:\n${JSON.stringify(summaryData, null, 2)}` },
+          ]);
+          statusEntry.innerHTML = '✅ Synthesis complete';
+        }
+
+        // Step 5: Display results
+        const processingTime = ((performance.now() - startTime) / 1000).toFixed(1);
+        const finalEntry = document.createElement('div');
+        finalEntry.className = 'log-entry final-output';
+        finalEntry.innerHTML = `
+          <div class="timestamp">${new Date().toLocaleTimeString()}</div>
+          <div>✓ Processing complete (${processingTime}s)</div>
+          <h3>RESPONSE:</h3>
+          <pre>${sanitizeInput(initialResponse)}</pre>
+          ${synthesis ? `<details><summary>Show insights</summary><pre>${sanitizeInput(synthesis)}</pre></details>` : ''}
+          <details>
+            <summary>Show adjacency data (${inputMatrices.size + outputMatrices.size} tokens)</summary>
+            <div><strong>Input tokens:</strong> ${Array.from(inputMatrices.keys()).slice(0, 10).join(', ')}${inputMatrices.size > 10 ? '...' : ''}</div>
+            <div><strong>Output tokens:</strong> ${Array.from(outputMatrices.keys()).slice(0, 10).join(', ')}${outputMatrices.size > 10 ? '...' : ''}</div>
+          </details>
+        `;
+        elements.log.appendChild(finalEntry);
+        elements.log.scrollTo({ top: elements.log.scrollHeight, behavior: 'smooth' });
+
+      } catch (err) {
+        if (err.name === 'AbortError' || err.message === 'AbortError') {
+          logWarning('Processing cancelled');
+        } else {
+          logError(err.message || 'Processing failed');
+          console.error('Processing error:', err);
+        }
+      } finally {
+        state.isProcessing = false;
+        currentAbortController = null;
+        elements.sendBtn.disabled = false;
+        elements.cancelBtn.style.display = 'none';
+        elements.input.disabled = false;
+        elements.input.value = '';
+        elements.input.focus();
+      }
+    }
+
+    // ============================================
+    // EVENT HANDLERS
+    // ============================================
+    elements.apiConfirmBtn.addEventListener('click', () => {
+      const key = elements.apiKeyInput.value.trim();
+      if (!key.startsWith('sk-')) {
+        logError('Invalid API key format (must start with sk-)');
         return;
       }
-      dirList.textContent="";
-      keys.sort().forEach((key) => {
-        const item = document.createElement("div");
-        const link = document.createElement("span");
-        link.textContent=key;
-        link.className="token-link";
-        link.onclick=() => showToken(key);
-        const btn = document.createElement("button");
-        btn.textContent="Download";
-        btn.onclick=async () => {
-          const matrix = await DB.get(key);
-          const blob = new Blob([JSON.stringify(matrix,null,2)], { type:"application/json" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href=url;
-          a.download=`${key}.json`;
-          a.click();
-          setTimeout(()=>URL.revokeObjectURL(url),5000);
-        };
-        item.appendChild(link);
-        item.appendChild(document.createTextNode(" "));
-        item.appendChild(btn);
-        dirList.appendChild(item);
-      });
-    } catch (err) {
-      dirList.textContent=`Failed: ${err.message}`;
-    }
-  }
+      state.apiKey = key;
+      elements.apiModal.classList.add('hidden');
+      logSuccess('API key configured for this session');
+    });
 
-  document.getElementById("openDir").onclick = () => {
-    refreshDirectory();
-    dirView.style.display="block";
-  };
-  document.getElementById("dirClose").onclick = () => {
-    dirView.style.display="none";
-  };
+    elements.apiCancelBtn.addEventListener('click', () => {
+      elements.apiModal.classList.add('hidden');
+      logWarning('Proceeding in offline mode (limited functionality)');
+    });
 
-  function help(){
-    print([
-      "Commands:",
-      "  key sk-XXXX   -> set OpenAI key (browser memory only)",
-      "  model NAME    -> set model (default gpt-4o-mini)",
-      "  depth N       -> set recursion depth (default 2)",
-      "  fanout K      -> set per-slot fanout (default 5)",
-      "  ls matrices   -> list cached tokens",
-      "  open TOKEN    -> open token’s matrix",
-      "  export        -> download all matrices as JSON",
-      "  purge         -> delete junk matrices",
-      "  help          -> show this help",
-      "Any other input is sent as a prompt."
-    ].join("\n"));
-  }
-
-  async function exportAll(){
-    const keys = await DB.keys();
-    const bundle = {};
-    for(const key of keys){
-      const val = await DB.get(key);
-      if(val) bundle[key]=val;
-    }
-    const blob = new Blob([JSON.stringify(bundle,null,2)], { type:"application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href=url;
-    a.download="matrices-export.json";
-    a.click();
-    setTimeout(()=>URL.revokeObjectURL(url),5000);
-    print(`Exported ${keys.length} matrices.`);
-  }
-
-  function createStepLine(title, logs){
-    const el = print(`${title}`);
-    const spinner = createSpinner(el);
-    const start = performance.now();
-    return {
-      finish(ok, note){
-        const end = performance.now();
-        const elapsed = Math.round(end-start);
-        spinner.stop(ok?"✔":"✖");
-        el.textContent = `${ok?"✔":"✖"} ${title} (${elapsed}ms)${note?` - ${note}`:""}`;
-        if(!ok) el.classList.add("fail"); else el.classList.add("ok");
-        if(Array.isArray(logs)){
-          logs.push({ name:title, t0:start, t1:end, ok, note });
-        }
+    elements.sendBtn.addEventListener('click', () => {
+      const input = elements.input.value.trim();
+      if (!input) return;
+      
+      addLogEntry(`> ${sanitizeInput(input)}`);
+      
+      if (isCommand(input)) {
+        handleCommand(input);
+        elements.input.value = '';
+      } else {
+        processPrompt(input);
       }
-    };
-  }
+    });
 
-  async function runPrompt(text){
-    if(!OPENAI_KEY){
-      print("⚠ Enter your OpenAI API key using 'key sk-...'.", "fail");
-      return;
-    }
-    const runLog={ id: simpleHash(Date.now().toString()), inputPrompt:text, originalLLM:"", refined:"", emergentThoughts:"", steps:[], tokensIn:[], tokensOut:[] };
-    const tokensIn = tokenizeWords(text);
-    runLog.tokensIn = tokensIn;
-    let step = createStepLine("Tokenizing prompt input...", runLog.steps);
-    step.finish(true, `${tokensIn.length} tokens`);
-
-    const inputMatrices=[];
-    step = createStepLine("Downloading LLM input token weights and adjacencies...", runLog.steps);
-    try{
-      for(const token of tokensIn){
-        const { matrix, source } = await getAdjMatrix(token, tokensIn);
-        inputMatrices.push(matrix);
-        print(`  ${token} (${source})`);
-        showToken(token);
+    elements.cancelBtn.addEventListener('click', () => {
+      if (currentAbortController) {
+        currentAbortController.abort();
+        logWarning('Cancelling...');
       }
-      step.finish(true, `${inputMatrices.length} matrices ready`);
-    }catch(err){ step.finish(false, err.message); return; }
+    });
 
-    const originalChunks=[];
-    step = createStepLine("Loading LLM response to prompt...", runLog.steps);
-    const originalLine = print("");
-    try{
-      await streamChat([{role:"system",content:"You are an LLM assistant that provides concise, accurate answers. When helpful, you may use technical detail. Avoid chain-of-thought exposition."},{role:"user",content:text}], (delta)=>{
-        originalChunks.push(delta);
-        originalLine.textContent += delta;
-      });
-      step.finish(true, `${originalChunks.join("").length} chars`);
-    }catch(err){ step.finish(false, err.message); return; }
-    runLog.originalLLM = originalChunks.join("");
-    printCollapsible("Original LLM output", async ()=>runLog.originalLLM || "(empty)");
-    originalLine.textContent = "Original response captured (expand below)";
-
-    const tokensOut = tokenizeWords(runLog.originalLLM);
-    runLog.tokensOut = tokensOut;
-    step = createStepLine("Tokenizing LLM response output...", runLog.steps);
-    step.finish(true, `${tokensOut.length} tokens`);
-
-    const outputMatrices=[];
-    step = createStepLine("Downloading LLM output token weights and adjacencies...", runLog.steps);
-    try{
-      for(const token of tokensOut){
-        const { matrix, source } = await getAdjMatrix(token, tokensOut);
-        outputMatrices.push(matrix);
-        print(`  ${token} (${source})`);
-        showToken(token);
+    elements.input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        elements.sendBtn.click();
       }
-      step.finish(true, `${outputMatrices.length} matrices ready`);
-    }catch(err){ step.finish(false, err.message); return; }
+    });
 
-    createStepLine("Loading input tokens into HLSF matrices...", runLog.steps).finish(true, `${inputMatrices.length}`);
-    createStepLine("Loading output tokens into HLSF matrices...", runLog.steps).finish(true, `${outputMatrices.length}`);
+    // ============================================
+    // INITIALIZATION
+    // ============================================
+    window.addEventListener('beforeunload', () => {
+      state.apiKey = ''; // Clear from memory
+    });
 
-    const combined=[...inputMatrices,...outputMatrices];
-    const hierarchy = formalizeHierarchy(combined);
-    createStepLine("Formalizing hierarchical adjacencies...", runLog.steps).finish(true, `${hierarchy.layers.size} tokens mapped`);
-    const cross = crossLevelExpand(inputMatrices, outputMatrices, DEPTH, FANOUT);
-    createStepLine("Initiating cross-level recursive expansions...", runLog.steps).finish(true, `${cross.visited.length} visited`);
-    let dynamic = dynamicReorg(cross);
-    let edgeCount = Array.from(dynamic.reorganized.values()).reduce((acc,node)=>acc+node.edges.length,0);
-    if(edgeCount===0){
-      const bootstrapEdges = bootstrapFromText([...tokensIn, ...tokensOut]);
-      if(bootstrapEdges.length){
-        dynamic = integrateBootstrapEdges(dynamic, bootstrapEdges);
-        edgeCount = Array.from(dynamic.reorganized.values()).reduce((acc,node)=>acc+node.edges.length,0);
-      }
-    }
-    createStepLine("Dynamically reorganizing knowledge at multiple abstraction layers...", runLog.steps).finish(true, `${edgeCount} edges ranked`);
-    const attention = attentionEmbed(dynamic);
-    const mean = Array.from(attention.embeddings.values()).reduce((acc,val)=>acc+val,0)/(attention.embeddings.size||1);
-    createStepLine("Deploying attention-driven embedding algorithms...", runLog.steps).finish(true, `mean ${mean.toFixed(3)}`);
-    createStepLine("Facilitating efficient hierarchical knowledge synthesis...", runLog.steps).finish(true, `layers=${hierarchy.layers.size}`);
-    const propagated = propagateNonLocal(attention);
-    const avg = Array.from(propagated.propagated.values()).reduce((acc,val)=>acc+val,0)/(propagated.propagated.size||1);
-    createStepLine("Propagating non-local information...", runLog.steps).finish(true, `avg ${avg.toFixed(3)}`);
-
-    const insightGraph = composeInsightGraph({ matrices:combined, hierarchyData:hierarchy, dynamicData:dynamic, attentionData:attention, propagationData:propagated });
-    const emergentBullets = synthesizeEmergentThoughts(insightGraph);
-    runLog.emergentThoughts = emergentBullets.map(b=>`• ${b}`).join("\n");
-    printCollapsible("Emergent thoughts", async ()=>runLog.emergentThoughts || "(none)");
-
-    const reflect = reflectRewrite(runLog.originalLLM, emergentBullets);
-    const refinedChunks=[];
-    step = createStepLine("Developing revised response output...", runLog.steps);
-    const refinedLine = print("");
-    try{
-      await streamChat([
-        {role:"system",content:"You refine earlier answers using structured signals. You are brief, correct, and well-organized."},
-        {role:"user",content:reflect.payload}
-      ], (delta)=>{
-        refinedChunks.push(delta);
-        refinedLine.textContent += delta;
-      });
-      step.finish(true, `${refinedChunks.join("").length} chars`);
-    }catch(err){ step.finish(false, err.message); return; }
-    runLog.refined = refinedChunks.join("");
-    refinedLine.textContent = "";
-    print("Refined response:");
-    print(runLog.refined,"ok");
-    const report = formatRunReport(runLog.steps);
-    runLog.runReport = report;
-    printCollapsible("Run report", async ()=>report);
-  }
-
-  inputEl.addEventListener("keydown", async (e)=>{
-    if(e.key!=="Enter") return;
-    const line = inputEl.value.trim();
-    inputEl.value="";
-    if(!line) return;
-    if(line.startsWith("key ")){
-      OPENAI_KEY=line.slice(4).trim();
-      print("API key set for this tab (lost on refresh).");
-      return;
-    }
-    if(line.startsWith("model ")){
-      MODEL=line.slice(6).trim();
-      print(`Model set to ${MODEL}.`);
-      return;
-    }
-    if(line.startsWith("depth ")){
-      const value=parseInt(line.slice(6).trim(),10);
-      if(Number.isFinite(value)&&value>0){ DEPTH=value; print(`Depth set to ${DEPTH}.`);} else { print("Depth must be positive.","fail"); }
-      return;
-    }
-    if(line.startsWith("fanout ")){
-      const value=parseInt(line.slice(7).trim(),10);
-      if(Number.isFinite(value)&&value>0){ FANOUT=value; print(`Fanout set to ${FANOUT}.`);} else { print("Fanout must be positive.","fail"); }
-      return;
-    }
-    if(line==="help") { help(); return; }
-    if(line==="ls matrices"){ const keys = await DB.keys(); print(keys.join(", ")||"(none)"); return; }
-    if(line==="purge"){
-      const keys = await DB.keys();
-      let removed=0;
-      for(const key of keys){
-        const mat = await DB.get(key);
-        if(mat && isJunkMatrix(mat)){
-          await DB.del(key);
-          removed++;
-        }
-      }
-      print(removed?`Purged ${removed} junk matrices.`:"No junk matrices detected.");
-      return;
-    }
-    if(line.startsWith("open ")) { await showToken(line.slice(5).trim(), { force:true }); return; }
-    if(line==="export") { await exportAll(); return; }
-    await runPrompt(line);
-  });
-
-  print("⚠ Never share your OpenAI API key with untrusted pages. The key is stored only in memory and will be lost on refresh.");
-  help();
-  inputEl.focus();
+    updateStats();
+    addLogEntry(`
+      <strong>Welcome to HLSF Cognition Engine v2.0</strong><br>
+      Type a prompt to begin analysis, or use /help for commands.<br>
+      <small>⚡ Cached tokens: ${getCachedTokenCount()} | Estimated savings so far: ${formatCurrency(state.sessionStats.totalCacheHits * 2)}</small>
+    `);
   </script>
 </body>
 </html>
