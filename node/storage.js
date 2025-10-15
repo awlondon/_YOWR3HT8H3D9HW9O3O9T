@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { canonToken } from "../shared/engine.js";
+
 const ROOT = path.resolve(process.cwd(), "matrices");
 const INDEX_FILE = path.join(ROOT, "index.json");
 
@@ -10,8 +12,15 @@ function ensureDir() {
   }
 }
 
+function normalizeToken(token) {
+  const canon = canonToken(token);
+  if (canon) return canon;
+  return String(token || "").toLowerCase().trim();
+}
+
 function slugify(token) {
-  return token.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const normalized = normalizeToken(token);
+  return normalized.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 function readJSON(file) {
@@ -28,7 +37,9 @@ function writeJSON(file, data) {
 
 export function loadMatrix(token) {
   ensureDir();
-  const slug = slugify(token);
+  const normalized = normalizeToken(token);
+  if (!normalized) return null;
+  const slug = slugify(normalized);
   const file = path.join(ROOT, `${slug}.json`);
   if (!fs.existsSync(file)) return null;
   return readJSON(file);
@@ -36,6 +47,10 @@ export function loadMatrix(token) {
 
 export function saveMatrix(matrix) {
   ensureDir();
+  const normalizedToken = normalizeToken(matrix.token);
+  if (normalizedToken) {
+    matrix.token = normalizedToken;
+  }
   if (!matrix.meta) {
     matrix.meta = { language: "en", downloaded_at: new Date().toISOString(), source: "LLM" };
   } else if (!matrix.meta.downloaded_at) {
@@ -72,13 +87,15 @@ export function exportAll(dest = path.join(ROOT, "export.json")) {
 
 export function deleteMatrix(token) {
   ensureDir();
-  const slug = slugify(token);
+  const normalized = normalizeToken(token);
+  if (!normalized) return;
+  const slug = slugify(normalized);
   const file = path.join(ROOT, `${slug}.json`);
   if (fs.existsSync(file)) {
     fs.unlinkSync(file);
   }
   const index = readJSON(INDEX_FILE) || [];
-  const next = index.filter((t) => t !== token);
+  const next = index.filter((t) => t !== normalized);
   if (next.length !== index.length) {
     writeJSON(INDEX_FILE, next);
   }

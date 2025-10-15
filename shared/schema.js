@@ -37,7 +37,7 @@ export const ADJ_SCHEMA = {
       properties: {
         language: { type: "string", const: "en" },
         downloaded_at: { type: "string" },
-        source: { type: "string", enum: ["LLM", "BOOTSTRAP"] }
+        source: { type: "string", enum: ["LLM", "BOOTSTRAP", "HEURISTIC"] }
       }
     }
   }
@@ -101,7 +101,12 @@ export function validateAdjacencyMatrix(value) {
     }
   }
   if (!isPlainObject(meta)) return false;
-  if (meta.language !== "en" || (meta.source !== "LLM" && meta.source !== "BOOTSTRAP")) return false;
+  if (
+    meta.language !== "en" ||
+    (meta.source !== "LLM" && meta.source !== "BOOTSTRAP" && meta.source !== "HEURISTIC")
+  ) {
+    return false;
+  }
   if (typeof meta.downloaded_at !== "string") return false;
   return true;
 }

@@ -1,3 +1,5 @@
+import { canonToken, STOP_TOKENS } from "../shared/engine.js";
+
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 
 const REL_NAMES = [
@@ -68,6 +70,55 @@ const SLOTS_CANON_MAP = (() => {
 
 const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
 
+function isClosedClass(token) {
+  return token.startsWith("{") || STOP_TOKENS.has(token);
+}
+
+function buildClosedClassMatrix(token, model) {
+  const slots = Object.fromEntries(REL_NAMES.map((rel) => [rel, []]));
+  const push = (slot, neighbor, w) => {
+    slots[slot].push({ token: neighbor, w });
+  };
+  if (token === "{speaker}") {
+    push("Defines", "first person singular", 0.95);
+    push("Functions As", "deictic pronoun", 0.88);
+    push("Refers To", "author of utterance", 0.86);
+    push("Associated With", "self reference", 0.82);
+    push("Co-occurs With", "am", 0.74);
+    push("Co-occurs With", "my", 0.72);
+  } else if (token === "{addressee}") {
+    push("Defines", "second person", 0.95);
+    push("Functions As", "deictic pronoun", 0.88);
+    push("Refers To", "listener", 0.86);
+    push("Associated With", "directive", 0.80);
+    push("Co-occurs With", "are", 0.74);
+    push("Co-occurs With", "your", 0.72);
+  } else {
+    push("Functions As", "closed-class token", 0.9);
+    push("Associated With", "syntactic scaffolding", 0.82);
+    push("Co-occurs With", "content word", 0.6);
+  }
+  return {
+    token,
+    model: String(model || "heuristic"),
+    version: 1,
+    slots,
+    meta: {
+      language: "en",
+      downloaded_at: new Date().toISOString(),
+      source: "HEURISTIC"
+    }
+  };
+}
+
+function windowAround(tokens, target, W = 3) {
+  const idx = tokens.indexOf(target);
+  if (idx < 0) return "";
+  const left = Math.max(0, idx - W);
+  const right = Math.min(tokens.length, idx + W + 1);
+  return tokens.slice(left, right).join(" ");
+}
+
 function safeExtractJSON(s) {
   try {
     return JSON.parse(s);
@@ -87,8 +138,9 @@ function safeExtractJSON(s) {
 }
 
 function sanitizeAdjMatrix(raw, { token, model }) {
+  const canonicalToken = canonToken(token);
   const out = {
-    token: String(token).toLowerCase().trim(),
+    token: canonicalToken,
     model: String(model),
     version: 1,
     slots: Object.fromEntries(REL_NAMES.map((r) => [r, []])),
@@ -125,7 +177,7 @@ function validateAdjMatrix(obj) {
   if (
     !meta ||
     meta.language !== "en" ||
-    (meta.source !== "LLM" && meta.source !== "BOOTSTRAP")
+    (meta.source !== "LLM" && meta.source !== "BOOTSTRAP" && meta.source !== "HEURISTIC")
   ) {
     return "bad meta";
   }
@@ -262,7 +314,21 @@ function suggestGenericNeighbors(token) {
   return commons.filter((item) => item !== lower).slice(0, 6);
 }
 
-export async function getAdjMatrix({ apiKey, model, token, retries = 4 }) {
+function looksBogusModel(modelName) {
+  return /default|model_name|language_model|gpt-3\.5|text-davinci/i.test(modelName || "");
+}
+
+export async function getAdjMatrix({ apiKey, model, token, retries = 4, allTokens = [] }) {
+  const canonicalToken = canonToken(token);
+  const contextTokens = Array.isArray(allTokens)
+    ? allTokens.map((t) => canonToken(t)).filter(Boolean)
+    : [];
+  const windowContext = windowAround(contextTokens, canonicalToken, 4);
+
+  if (isClosedClass(canonicalToken)) {
+    return buildClosedClassMatrix(canonicalToken, model);
+  }
+
   const delays = [1000, 2000, 4000, 8000];
   const shouldRetry = (err) => {
     const status = err?.status || err?.cause?.status;
@@ -291,12 +357,18 @@ export async function getAdjMatrix({ apiKey, model, token, retries = 4 }) {
     return raw;
   };
 
-  const callWithRetry = (params) => execWithRetry(() => callAdjLLM({ apiKey, model, ...params }));
-  const fetchContext = () => execWithRetry(() => getContextHint({ apiKey, model, token }));
+  const callWithRetry = (params = {}) => {
+    const context = params.context ?? windowContext;
+    return execWithRetry(() =>
+      callAdjLLM({ apiKey, model, token: canonicalToken, context, forced: params.forced })
+    );
+  };
+  const fetchContext = () =>
+    execWithRetry(() => getContextHint({ apiKey, model, token: canonicalToken }));
 
-  let text = await callWithRetry({ token });
+  let text = await callWithRetry();
   let raw = parse(text);
-  let { out, nonEmpty } = sanitizeAdjMatrix(raw, { token, model });
+  let { out, nonEmpty } = sanitizeAdjMatrix(raw, { token: canonicalToken, model });
   let vErr = validateAdjMatrix(out);
   if (vErr) throw new Error(`Schema mismatch: ${vErr}`);
   if (nonEmpty >= MIN_NEIGHBORS_BASE) {
@@ -312,9 +384,11 @@ export async function getAdjMatrix({ apiKey, model, token, retries = 4 }) {
     context = "";
   }
 
-  text = await callWithRetry({ token, context });
+  const mergedContext = [windowContext, context].filter(Boolean).join(" | ");
+
+  text = await callWithRetry({ context: mergedContext });
   raw = parse(text);
-  ({ out, nonEmpty } = sanitizeAdjMatrix(raw, { token, model }));
+  ({ out, nonEmpty } = sanitizeAdjMatrix(raw, { token: canonicalToken, model }));
   vErr = validateAdjMatrix(out);
   if (vErr) throw new Error(`Schema mismatch: ${vErr}`);
   if (nonEmpty >= MIN_NEIGHBORS_BASE) {
@@ -322,9 +396,9 @@ export async function getAdjMatrix({ apiKey, model, token, retries = 4 }) {
   }
   debugLog(PASS2_STATUS);
 
-  text = await callWithRetry({ token, context, forced: true });
+  text = await callWithRetry({ context: mergedContext, forced: true });
   raw = parse(text);
-  ({ out, nonEmpty } = sanitizeAdjMatrix(raw, { token, model }));
+  ({ out, nonEmpty } = sanitizeAdjMatrix(raw, { token: canonicalToken, model }));
   vErr = validateAdjMatrix(out);
   if (vErr) throw new Error(`Schema mismatch: ${vErr}`);
   if (nonEmpty >= MIN_NEIGHBORS_FORCED) {
@@ -334,7 +408,7 @@ export async function getAdjMatrix({ apiKey, model, token, retries = 4 }) {
 
   out.meta.source = "BOOTSTRAP";
   out.meta.downloaded_at = new Date().toISOString();
-  out.slots["Co-occurs With"] = suggestGenericNeighbors(token).map((item, idx) => ({
+  out.slots["Co-occurs With"] = suggestGenericNeighbors(canonicalToken).map((item, idx) => ({
     token: item,
     w: Math.max(0.3, 0.9 - 0.05 * idx)
   }));
@@ -347,9 +421,9 @@ export async function getAdjMatrix({ apiKey, model, token, retries = 4 }) {
 
 export function isJunkMatrix(mat) {
   if (!mat || typeof mat !== "object") return true;
-  const badModel = /default|model_name|language_model/i.test(mat.model || "");
+  const badModel = looksBogusModel(mat.model);
   const downloaded = Date.parse(mat.meta?.downloaded_at || 0);
-  const tooOld = Number.isFinite(downloaded) ? downloaded < Date.parse("2024-01-01") : true;
+  const tooOld = Number.isFinite(downloaded) ? downloaded < Date.parse("2024-06-01") : true;
   const empty = REL_NAMES.every((rel) => Array.isArray(mat.slots?.[rel]) && mat.slots[rel].length === 0);
   return badModel || tooOld || empty;
 }
